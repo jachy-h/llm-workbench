@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Login-autostart template (English; the Chinese version is the *.plist next
+  to this file). Edit before use:
+    1. /Users/YOURNAME is a placeholder — launchd does not expand variables,
+       so put your real absolute paths in
+    2. point the binary at wherever you installed it (`which ollama-nothink-proxy`
+       or your local build)
+  Install:
+    cp contrib/com.github.ollama-nothink-proxy.en.plist ~/Library/LaunchAgents/com.github.ollama-nothink-proxy.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.ollama-nothink-proxy.plist
+  Remove:
+    launchctl bootout gui/$(id -u)/com.github.ollama-nothink-proxy
+
+  You normally do not need this file: the portal's "Start at login" switch
+  generates an equivalent plist from the running binary and the current UI
+  language.
+
+  Language: ONP_LANG sets the output language of the launchd instance
+  (zh / en). launchd does not inherit the shell locale, so it is written out
+  here; drop the key to follow the system locale, which falls back to Chinese
+  when it cannot tell.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.github.ollama-nothink-proxy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOURNAME/bin/ollama-nothink-proxy</string>
+        <string>--port</string>
+        <string>11500</string>
+        <!-- let launchd supervise the process itself; never open a browser at login -->
+        <string>--foreground</string>
+        <string>--no-browser</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ONP_LANG</key>
+        <string>en</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOURNAME/Library/Logs/ollama-nothink-proxy.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOURNAME/Library/Logs/ollama-nothink-proxy.log</string>
+
+    <!-- start the proxy after Ollama so the upstream is already listening -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

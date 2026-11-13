@@ -1,127 +1,102 @@
 # ollama-nothink-proxy
 
-让 Ollama 的思考型模型在 **OpenAI 兼容接口**上真正"不思考"，并顺手补上兼容层会丢掉的生成参数。
+[English](README.en.md) · 中文
 
-零第三方依赖，单文件实现，用 [uv](https://github.com/astral-sh/uv) 管理。
+Ollama 前面的透明小代理：**强制关闭思考**、补齐缺失的生成参数。Ollama 的 `/v1` 会静默忽略 `think: false`，走 OpenAI 兼容接口的客户端因此每句话都要先思考——这个代理解决的就是这件事。
 
-## 为什么需要它
+零第三方依赖，单个二进制（Go 1.24+）。只监听本机，不做 TLS 与认证，别暴露到局域网。
 
-Ollama 的 `/v1/chat/completions` 和原生 `/api/chat` 对思考开关的处理不一致，实测（Ollama 0.40.16, qwen3.5:0.8b-mlx）：
+## 安装
 
-| 方式 | 结果 |
+> Homebrew 制作中：`brew install jachy-h/tap/ollama-nothink-proxy`（暂不可用）。
+
+**推荐：源码构建**（不会有签名 / 隔离属性问题，需要 Go 1.24+）
+
+```bash
+git clone https://github.com/jachy-h/ollama-nothink-proxy
+cd ollama-nothink-proxy
+make build && ./ollama-nothink-proxy
+```
+
+**下载预编译产物**：[Releases](https://github.com/jachy-h/ollama-nothink-proxy/releases)，SHA256 见 `checksums.txt`：
+
+| 平台 | 产物 |
 | --- | --- |
-| `/api/chat` + `"think": false` | ✅ 生效 |
-| `/v1` + `"think": false` | ❌ 被静默忽略，仍在思考 |
-| `/v1` + `chat_template_kwargs.enable_thinking=false` | ❌ 被忽略 |
-| `/v1` + `"reasoning_effort": "none"` | ✅ 唯一有效开关 |
-| `Modelfile` 里 `PARAMETER think false` | ❌ `unknown parameter 'think'` |
-| 自定义 `TEMPLATE` 去掉思考块 | ❌ 无效，thinking 在 Go 侧 parser 里 |
-| `/v1` + `num_ctx` / `num_predict` | ❌ 非标准字段，被丢弃 |
+| macOS Apple Silicon / Intel | `..._darwin_arm64.tar.gz` / `..._darwin_amd64.tar.gz` |
+| Windows x64 | `..._windows_amd64.zip` |
+| Linux x86_64 / arm64 | `..._linux_amd64.tar.gz` / `..._linux_arm64.tar.gz` |
 
-后果很具体：走 `/v1` 的客户端（例如 Easydict 的 Ollama 服务）每句话都要先思考 —— 短词 1s 起步、短句 2~5s；思考还会吃掉 `max_tokens` 预算，导致正文变成空字符串；请求不带 token 上限时甚至能无限思考，把 runner 卡死。
+```bash
+tar -xzf ollama-nothink-proxy_0.2.0_darwin_arm64.tar.gz
+./ollama-nothink-proxy
+```
 
-## 实测（M1 16GB，Ollama 0.40.16，qwen3.5:0.8b-mlx）
+**macOS 首次运行可能被 Gatekeeper 拦下**（产物没有 Apple 签名与公证，浏览器下载的包带 `com.apple.quarantine`，会提示「无法验证开发者」）。任选一种放行：
 
-| 场景 | 直连 `/v1` | 经代理 |
-| --- | --- | --- |
-| 单词翻译 | 3.6s，且正文是空字符串 | **0.12–0.17s**，正常输出 |
-| 短句翻译 | 2–5s | **0.27–0.37s** |
-| 不带 token 上限 | 单次请求跑了 **264s**、10666 个 SSE 分块 | 0.26s、10 个分块 |
-| 流式首块延迟 | 58ms | 83ms（+25ms 代理开销） |
-| 8 条 p50 | — | **167ms** |
+- 右键点二进制 → 打开 → 再确认一次「打开」；
+- `xattr -d com.apple.quarantine ./ollama-nothink-proxy`；
+- 或改用上面的源码构建，编译产物不带隔离属性。
 
-## 它做什么
-
-1. 对 chat 请求**强制关思考**：`/v1` 注入 `reasoning_effort: none`，`/api/chat` 注入 `think: false`；
-2. 给**缺失**的生成参数填默认值（`temperature` / `top_p` / `max_tokens` / `keep_alive`）；
-3. 其余请求（`/v1/models`、`/api/tags`、`/api/show` …）一律原样透传；
-4. 响应按块转发，流式不被攒包。
-
-**客户端显式传了的字段永远不会被改写**，所以它和任何 UI 的参数设置共存。
+Windows 同理：SmartScreen 提示时选「更多信息 → 仍要运行」。
 
 ## 用法
 
 ```bash
-cd ~/work/open-source/ollama-nothink-proxy
-
-# 默认监听 11500，转发到 127.0.0.1:11434
-uv run ollama-nothink-proxy
-
-# 换个端口 / 上游
-uv run ollama-nothink-proxy --port 11500 --upstream http://127.0.0.1:11434
-
-# 调参：--set 可重复，值按 JSON 解析
-uv run ollama-nothink-proxy --set temperature=0 --set max_tokens=128
-
-# 只关思考，不补任何参数
-uv run ollama-nothink-proxy --no-defaults
-
-# 看每个请求
-uv run ollama-nothink-proxy -v
+./ollama-nothink-proxy                    # 后台运行并打开控制台
+./ollama-nothink-proxy -f --no-browser    # 前台运行
+./ollama-nothink-proxy restart            # 重启当前实例
 ```
 
-启动后会打印实际生效的注入参数和该填给客户端的 endpoint。
+把客户端的 OpenAI 兼容 endpoint 指向代理即可，其余不用改：
 
-### 接到 Easydict
+```text
+http://127.0.0.1:11500/v1/chat/completions
+```
 
-Easydict 的「Ollama」服务把 endpoint 硬编码成 `http://localhost:11434/v1/chat/completions`，改不了。两条路：
+## 配置：用控制台
 
-**A. 用「自定义 OpenAI」服务（推荐）**
+启动后打开 <http://127.0.0.1:11500/__portal>（只允许本机访问），日常配置都在这里：
 
-| 字段 | 值 |
+- **参数**：上游地址、超时、注入参数（JSON），保存即生效并写入配置文件，「恢复默认」填回内置值；
+- **启动项**：macOS 登录自启开关（安装 / 删除 LaunchAgent）；
+- **实时日志**：最近 100 条，可暂停；
+
+只有 `host` / `port` 改完需要 `./ollama-nothink-proxy restart`。配置文件由控制台维护，一般不用手改：
+
+```text
+macOS:      ~/Library/Application Support/ollama-nothink-proxy/config.json
+其它系统:    ~/.config/ollama-nothink-proxy/config.json
+```
+
+## CLI Doc
+
+```text
+ollama-nothink-proxy [<command>] [<options>]
+```
+
+| 命令 | 行为 |
 | --- | --- |
-| Endpoint | `http://127.0.0.1:11500/v1/chat/completions` |
-| API Key | 随便填 |
-| 模型 | `qwen3.5:0.8b-mlx` |
-
-**B. 端口互换，Easydict 的 Ollama 服务原样不动**
+| （无）/ `serve` / `start` | 启动代理：默认后台运行并打开控制台，`-f` 前台运行 |
+| `restart` | 停掉当前实例，再用本命令的参数启动；没有实例时等同启动 |
 
 ```bash
-launchctl setenv OLLAMA_HOST 127.0.0.1:11435   # 然后重启 Ollama.app
-uv run ollama-nothink-proxy --port 11434 --upstream http://127.0.0.1:11435
+ollama-nothink-proxy restart --port 11501   # 换端口重开
 ```
 
-## 参数注入规则
+选项（优先级：**CLI > 环境变量 > 配置文件 > 内置默认值**；客户端显式传的字段永远优先于以上全部）：
 
-默认值（见 `DEFAULT_PARAMS`）：
-
-```python
-{"temperature": 0.2, "top_p": 0.9, "max_tokens": 96, "keep_alive": "30m"}
-```
-
-优先级：`默认值 < 环境变量 PROXY_PARAMS < 命令行 --set`，且**客户端显式传值 > 以上全部**。
-
-```bash
-PROXY_PARAMS='{"temperature": 0.1, "max_tokens": 64}' uv run ollama-nothink-proxy
-PROXY_PARAMS='{}' uv run ollama-nothink-proxy      # 等价 --no-defaults
-```
-
-原生 `/api/chat` 上会自动做字段映射：`max_tokens → options.num_predict`、`temperature/top_p → options.*`、`keep_alive → 顶层`。
-
-`num_ctx` 和 `repeat_penalty` 在 `/v1` 层改不了（见上表）。翻译场景用默认 4096 上下文足够；要改这两项只能建一个 Modelfile 衍生模型。
-
-## 登录自启（launchd）
-
-```bash
-mkdir -p ~/Library/LaunchAgents
-cp contrib/com.github.ollama-nothink-proxy.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.github.ollama-nothink-proxy.plist
-launchctl list | grep ollama-nothink-proxy
-```
-
-日志在 `~/Library/Logs/ollama-nothink-proxy.log`。plist 里的路径要按你的实际位置改（`uv` 与项目目录）。
-
-## 测试
-
-```bash
-uv run python -m unittest discover -s tests -v
-uv run ruff check .
-```
-
-测试用假上游验证注入逻辑与透传行为，不依赖真实 Ollama。
-
-## 已知边界
-
-- 只做 `http`，不做 TLS/认证 —— 监听 `127.0.0.1`，不要暴露到局域网。
-- 只注入已知字段，不做请求体校验以外的任何改写。
-- 非 chat 路径完全透传，代理本身不缓存任何东西。
+| 选项 / 变量 | 配置文件键 | 默认值 | 何时生效 |
+| --- | --- | --- | --- |
+| `--host` | `host` | `127.0.0.1` | 需重启 |
+| `--port`、`PORT` | `port` | `11500` | 需重启 |
+| `--upstream`、`UPSTREAM` | `upstream` | `http://127.0.0.1:11434` | 即时 |
+| `--timeout` | `timeout` | `600`（秒） | 即时 |
+| `--set KEY=VALUE`（可重复） | `params` | `temperature=0.2`、`top_p=0.9`、`max_tokens=96`、`keep_alive="30m"` | 即时 |
+| `PROXY_PARAMS` | `params` | — | 启动时 |
+| `--no-defaults` | — | `false` | 启动时 |
+| `--max-concurrent` | — | `8` | 需重启 |
+| `--max-body-size` | — | `1048576` | 需重启 |
+| `--lang`、`ONP_LANG` | `lang` | `auto`（跟随系统） | 即时 |
+| `--config` | — | 见上文 | 启动时 |
+| `--log` | — | `~/Library/Logs/ollama-nothink-proxy.log` | 启动时 |
+| `-v`、`-f`、`--no-browser`、`--version` | — | 关闭 / 后台 / 打开 / — | 启动时 |
