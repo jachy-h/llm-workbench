@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  登录自启示例。用前必改：
+    1. $HOME 占位符不能直接用，请替换成你的真实绝对路径（launchd 不展开变量）
+    2. uv 的路径用 `which uv` 拿
+    3. 项目目录按实际位置改
+  安装：
+    cp contrib/com.github.ollama-nothink-proxy.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.github.ollama-nothink-proxy.plist
+  卸载：
+    launchctl unload ~/Library/LaunchAgents/com.github.ollama-nothink-proxy.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.github.ollama-nothink-proxy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOURNAME/.local/bin/uv</string>
+        <string>run</string>
+        <string>--project</string>
+        <string>/Users/YOURNAME/work/open-source/ollama-nothink-proxy</string>
+        <string>ollama-nothink-proxy</string>
+        <string>--port</string>
+        <string>11500</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOURNAME/Library/Logs/ollama-nothink-proxy.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOURNAME/Library/Logs/ollama-nothink-proxy.log</string>
+
+    <!-- Ollama 先起来再起代理, 免得上游还没监听 -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
