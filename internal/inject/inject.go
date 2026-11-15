@@ -1,15 +1,17 @@
-// Package inject rewrites the two Ollama chat request bodies.
+// Package inject adapts the policy rules to the proxy's raw JSON bodies.
 //
-// The rewrite is deliberately narrow: only the thinking switch and the
-// missing generation parameters are touched. Everything else is kept as
-// json.RawMessage so unknown / future fields survive untouched and numbers
-// keep their original textual form.
+// The actual rewriting lives in internal/policy; this package only keeps the
+// historical API (InjectV1 / InjectNative) and the path matching used by the
+// transparent proxy. Keeping it thin prevents a second parameter table from
+// growing here.
 package inject
 
 import (
 	"bytes"
 	"encoding/json"
 	"slices"
+
+	"github.com/jachy-h/llm-workbench/internal/policy"
 )
 
 // Kind is the chat-flavour of a request path.
@@ -42,87 +44,39 @@ func ChatPathKind(path string) Kind {
 	}
 }
 
-// InjectV1 fills in missing params and forces reasoning_effort:"none".
-//
-// think is removed: on this path Ollama silently ignores it, keeping it
-// would only mislead whoever inspects the request.
+// InjectV1 applies the historical default policy: thinking off and only the
+// missing params filled in. Kept for callers and tests that do not need a
+// configurable policy.
 func InjectV1(
 	body map[string]json.RawMessage,
 	params map[string]json.RawMessage,
 ) map[string]json.RawMessage {
-	out := clone(body)
-	for key, value := range params {
-		if _, ok := out[key]; !ok {
-			out[key] = value
-		}
-	}
-	out["reasoning_effort"] = json.RawMessage(`"none"`)
-	delete(out, "think")
-	return out
+	return policy.ApplyV1(body, policy.New(params))
 }
 
-// nativeOptionKeys are the params that belong inside /api/chat "options".
-var nativeOptionKeys = map[string]bool{
-	"temperature":    true,
-	"top_p":          true,
-	"num_ctx":        true,
-	"repeat_penalty": true,
-	"seed":           true,
-}
-
-// InjectNative fills in missing params inside options and forces think:false.
-//
-// ok is false when the client sent an "options" member that is not a JSON
-// object; in that case the caller must pass the request through unchanged
-// instead of dropping a field it does not understand.
+// InjectNative is the historical native default: think:false and missing
+// params filled into options. ok is false when "options" is not an object.
 func InjectNative(
 	body map[string]json.RawMessage,
 	params map[string]json.RawMessage,
 ) (out map[string]json.RawMessage, ok bool) {
-	out = clone(body)
+	return policy.ApplyNative(body, policy.New(params))
+}
 
-	options := map[string]json.RawMessage{}
-	hadOptions := false
-	if raw, present := out["options"]; present {
-		hadOptions = true
-		trimmed := bytes.TrimSpace(raw)
-		if len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
-			if err := json.Unmarshal(raw, &options); err != nil {
-				return body, false
-			}
-		}
-	}
+// ApplyV1 rewrites an OpenAI-compatible request with an explicit policy.
+func ApplyV1(
+	body map[string]json.RawMessage,
+	p policy.Policy,
+) map[string]json.RawMessage {
+	return policy.ApplyV1(body, p)
+}
 
-	optionsChanged := false
-	for key, value := range params {
-		switch {
-		case key == "max_tokens":
-			if _, ok := options["num_predict"]; !ok {
-				options["num_predict"] = value
-				optionsChanged = true
-			}
-		case nativeOptionKeys[key]:
-			if _, ok := options[key]; !ok {
-				options[key] = value
-				optionsChanged = true
-			}
-		default: // keep_alive and friends stay on the top level
-			if _, ok := out[key]; !ok {
-				out[key] = value
-			}
-		}
-	}
-
-	if (hadOptions || optionsChanged) && len(options) > 0 {
-		raw, err := json.Marshal(options)
-		if err != nil {
-			return body, false
-		}
-		out["options"] = raw
-	}
-	out["think"] = json.RawMessage("false")
-	delete(out, "reasoning_effort")
-	return out, true
+// ApplyNative rewrites an Ollama native request with an explicit policy.
+func ApplyNative(
+	body map[string]json.RawMessage,
+	p policy.Policy,
+) (out map[string]json.RawMessage, ok bool) {
+	return policy.ApplyNative(body, p)
 }
 
 // Encode serialises a body without HTML escaping and without a trailing
@@ -149,12 +103,4 @@ func DecodeObject(raw []byte) (map[string]json.RawMessage, bool) {
 		return nil, false
 	}
 	return body, true
-}
-
-func clone(body map[string]json.RawMessage) map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(body)+4)
-	for k, v := range body {
-		out[k] = v
-	}
-	return out
 }

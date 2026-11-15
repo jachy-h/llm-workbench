@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jachy-h/ollama-nothink-proxy/internal/config"
-	"github.com/jachy-h/ollama-nothink-proxy/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/config"
+	"github.com/jachy-h/llm-workbench/internal/i18n"
 )
 
 func TestHumanBytes(t *testing.T) {
@@ -89,7 +89,7 @@ func TestBannerIsPlainWhenNotATerminal(t *testing.T) {
 		t.Errorf("banner contains ANSI escapes on a non-terminal writer:\n%q", text)
 	}
 	for _, needle := range []string{
-		"ollama-nothink-proxy",
+		"llm-workbench",
 		"后台运行 (pid 42)",
 		"listen    http://127.0.0.1:11434",
 		"portal    http://127.0.0.1:11434/__portal",
@@ -145,5 +145,25 @@ func TestBannerInEnglish(t *testing.T) {
 	// The labels share a column in both languages.
 	if !strings.Contains(text, "listen    http://127.0.0.1:11434") {
 		t.Errorf("English banner lost the label column:\n%s", text)
+	}
+}
+
+func TestBannerReflectsThinkingMode(t *testing.T) {
+	t.Cleanup(func() { i18n.Set(i18n.ZH) })
+	cases := map[string]string{
+		"on":          "不再强制关闭思考",
+		"passthrough": "思考原样透传",
+	}
+	for mode, needle := range cases {
+		cfg, err := config.Parse([]string{"--port", "11434", "--no-browser", "--thinking", mode},
+			func(string) (string, bool) { return "", false })
+		if err != nil {
+			t.Fatalf("parse %s: %v", mode, err)
+		}
+		var out bytes.Buffer
+		printBanner(&out, cfg, "http://127.0.0.1:11434/__portal", bannerOptions{})
+		if !strings.Contains(out.String(), needle) {
+			t.Errorf("banner for %s missing %q:\n%s", mode, needle, out.String())
+		}
 	}
 }

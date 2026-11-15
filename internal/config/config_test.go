@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jachy-h/ollama-nothink-proxy/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/policy"
 )
 
 func envOf(pairs map[string]string) func(string) (string, bool) {
@@ -245,6 +246,117 @@ func TestDefaultPaths(t *testing.T) {
 	if !filepath.IsAbs(cfg.LogPath) || filepath.Ext(cfg.LogPath) != ".log" {
 		t.Errorf("LogPath = %q", cfg.LogPath)
 	}
+	if strings.Contains(cfg.ConfigPath, LegacyDir) {
+		t.Errorf("DefaultConfigPath still uses the legacy directory: %q", cfg.ConfigPath)
+	}
+}
+
+func TestImportLegacyConfig(t *testing.T) {
+	t.Cleanup(func() { i18n.Set(i18n.ZH) })
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+
+	legacy := LegacyConfigPath()
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte(`{"upstream":"http://legacy:11434","params":{"temperature":0.7},"lang":"en"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Runtime parsing reads the old file when the new path is missing, but
+	// keeps writing to the new path.
+	cfg, err := ParseRuntime([]string{"--log", filepath.Join(dir, "x.log")}, envOf(nil))
+	if err != nil {
+		t.Fatalf("ParseRuntime: %v", err)
+	}
+	if cfg.Upstream() != "http://legacy:11434" {
+		t.Errorf("legacy upstream = %q", cfg.Upstream())
+	}
+	if cfg.Lang() != i18n.EN {
+		t.Errorf("legacy lang = %q, want en", cfg.Lang())
+	}
+	if cfg.ConfigPath != DefaultConfigPath() {
+		t.Errorf("ConfigPath = %q, want new default %q", cfg.ConfigPath, DefaultConfigPath())
+	}
+	if _, err := os.Stat(DefaultConfigPath()); !os.IsNotExist(err) {
+		t.Errorf("runtime fallback created the new config: %v", err)
+	}
+
+	dst := DefaultConfigPath()
+	result, err := ImportLegacyConfig(dst)
+	if err != nil {
+		t.Fatalf("ImportLegacyConfig: %v", err)
+	}
+	if !result.Copied || result.Reason != "copied" {
+		t.Errorf("result = %+v, want copied", result)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Errorf("legacy config was removed: %v", err)
+	}
+
+	// A second run must not overwrite the new file.
+	if err := os.WriteFile(dst, []byte(`{"params":{"temperature":0.1}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err = ImportLegacyConfig(dst)
+	if err != nil {
+		t.Fatalf("ImportLegacyConfig second run: %v", err)
+	}
+	if result.Copied || result.Reason != "destination_exists" {
+		t.Errorf("second result = %+v, want destination_exists", result)
+	}
+	data, _ := os.ReadFile(dst)
+	if !strings.Contains(string(data), "0.1") {
+		t.Errorf("destination overwritten: %s", data)
+	}
+}
+
+func TestImportLegacyConfigMissingAndBroken(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+	dst := filepath.Join(dir, "new", "config.json")
+
+	result, err := ImportLegacyConfig(dst)
+	if err != nil {
+		t.Fatalf("missing source: %v", err)
+	}
+	if result.Copied || result.Reason != "source_missing" {
+		t.Errorf("result = %+v, want source_missing", result)
+	}
+
+	legacy := LegacyConfigPath()
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte(`{"broken":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportLegacyConfig(dst); err == nil {
+		t.Error("broken legacy config was copied without an error")
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Errorf("broken source created the destination: %v", err)
+	}
+}
+
+func TestConfigPathFromArgs(t *testing.T) {
+	cases := map[string]struct {
+		args []string
+		want string
+	}{
+		"missing": {nil, ""},
+		"space":   {[]string{"--config", "a.json"}, "a.json"},
+		"equals":  {[]string{"--config=a.json"}, "a.json"},
+		"other":   {[]string{"--port", "1"}, ""},
+	}
+	for name, tc := range cases {
+		if got := ConfigPathFromArgs(tc.args); got != tc.want {
+			t.Errorf("%s: ConfigPathFromArgs(%v) = %q, want %q", name, tc.args, got, tc.want)
+		}
+	}
 }
 
 func TestCoerce(t *testing.T) {
@@ -388,6 +500,8 @@ func TestSplitCommand(t *testing.T) {
 		{[]string{"--port", "11500"}, CommandServe, []string{"--port", "11500"}},
 		{[]string{"restart"}, CommandRestart, []string{}},
 		{[]string{"restart", "--port", "11501"}, CommandRestart, []string{"--port", "11501"}},
+		{[]string{"migrate"}, CommandMigrate, []string{}},
+		{[]string{"migrate", "--config", "x.json"}, CommandMigrate, []string{"--config", "x.json"}},
 		{[]string{"serve", "--port", "11502"}, CommandServe, []string{"--port", "11502"}},
 		// Unknown positionals stay put so flag parsing reports them.
 		{[]string{"bogus"}, CommandServe, []string{"bogus"}},
@@ -411,8 +525,279 @@ func TestSplitCommand(t *testing.T) {
 }
 
 func TestUsageMentionsRestart(t *testing.T) {
-	if text := UsageText(); !strings.Contains(text, "restart") {
-		t.Errorf("usage does not mention restart:\n%s", text)
+	if text := UsageText(); !strings.Contains(text, "restart") || !strings.Contains(text, "migrate") {
+		t.Errorf("usage does not mention restart/migrate:\n%s", text)
+	}
+}
+
+func TestThinkingAndSystemPromptFlags(t *testing.T) {
+	cfg := parse(t, append(tempPaths(t), "--thinking", "on", "--system-prompt", "be terse"), nil)
+	resolved, ok := cfg.Policy("")
+	if !ok {
+		t.Fatal("Policy failed")
+	}
+	if resolved.Thinking != policy.ThinkingOn {
+		t.Errorf("thinking = %q", resolved.Thinking)
+	}
+	if resolved.SystemPrompt.Mode != policy.SystemPromptInjectIfMissing || resolved.SystemPrompt.Text != "be terse" {
+		t.Errorf("system prompt = %+v", resolved.SystemPrompt)
+	}
+
+	override := parse(t, append(tempPaths(t), "--system-prompt", "x", "--system-prompt-override"), nil)
+	if got := override.SystemPrompt(); got.Mode != policy.SystemPromptOverride {
+		t.Errorf("override mode = %q", got.Mode)
+	}
+}
+
+func TestSystemPromptFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prompt.txt")
+	if err := os.WriteFile(path, []byte("from file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, append(tempPaths(t), "--system-prompt-file", path), nil)
+	if got := cfg.SystemPrompt(); got.Mode != policy.SystemPromptInjectIfMissing || got.Text != "from file" {
+		t.Errorf("system prompt = %+v", got)
+	}
+	if _, err := Parse(append(tempPaths(t), "--system-prompt", "x", "--system-prompt-file", path), envOf(nil)); err == nil {
+		t.Error("both system prompt flags were accepted")
+	}
+}
+
+func TestConfigFileThinkingAndSystemPrompt(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	file := `{"thinking":"passthrough","system_prompt":{"mode":"override","text":"fixed"}}`
+	if err := os.WriteFile(cfgPath, []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
+	resolved, _ := cfg.Policy("")
+	if resolved.Thinking != policy.ThinkingPassthrough {
+		t.Errorf("thinking = %q", resolved.Thinking)
+	}
+	if resolved.SystemPrompt.Mode != policy.SystemPromptOverride || resolved.SystemPrompt.Text != "fixed" {
+		t.Errorf("system prompt = %+v", resolved.SystemPrompt)
+	}
+}
+
+func TestProfiles(t *testing.T) {
+	defaults := DefaultProfiles()
+	for _, name := range []string{"nothink", "raw", "thinking"} {
+		if _, ok := defaults[name]; !ok {
+			t.Errorf("built-in profile %q missing", name)
+		}
+	}
+	if config := parse(t, tempPaths(t), nil); config.ActiveProfile() != "" {
+		t.Errorf("active profile = %q, want empty", config.ActiveProfile())
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	file := `{"profiles":{"fast":{"thinking":"off","params":{"temperature":0.1},"system_prompt":{"mode":"inject-if-missing","text":"fast"}}}}`
+	if err := os.WriteFile(cfgPath, []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"), "--profile", "fast"}, nil)
+	if cfg.ActiveProfile() != "fast" {
+		t.Errorf("active profile = %q", cfg.ActiveProfile())
+	}
+	resolved, ok := cfg.Policy("")
+	if !ok || resolved.Thinking != policy.ThinkingOff || resolved.SystemPrompt.Text != "fast" {
+		t.Errorf("policy = %+v (ok %v)", resolved, ok)
+	}
+	if string(resolved.Params["temperature"]) != "0.1" {
+		t.Errorf("params = %v", resolved.Params)
+	}
+
+	raw, ok := cfg.Policy("raw")
+	if !ok || raw.Thinking != policy.ThinkingPassthrough || len(raw.Params) != 0 {
+		t.Errorf("raw profile = %+v (ok %v)", raw, ok)
+	}
+	if _, ok := cfg.Policy("nope"); ok {
+		t.Error("unknown profile resolved")
+	}
+
+	// --set still wins over the selected profile.
+	withSet := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"),
+		"--profile", "fast", "--set", "temperature=0.9"}, nil)
+	selected, _ := withSet.Policy("")
+	if string(selected.Params["temperature"]) != "0.9" {
+		t.Errorf("--set did not override profile: %v", selected.Params)
+	}
+
+	// Explicit thinking also beats the profile.
+	withThinking := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"),
+		"--profile", "raw", "--thinking", "off"}, nil)
+	selected, _ = withThinking.Policy("")
+	if selected.Thinking != policy.ThinkingOff {
+		t.Errorf("--thinking did not override profile: %q", selected.Thinking)
+	}
+}
+
+func TestInvalidPolicyConfig(t *testing.T) {
+	cases := [][]string{
+		{"--thinking", "maybe"},
+		{"--profile", "missing"},
+	}
+	for _, extra := range cases {
+		if _, err := Parse(append(tempPaths(t), extra...), envOf(nil)); err == nil {
+			t.Errorf("Parse(%v) succeeded", extra)
+		}
+	}
+	dir := t.TempDir()
+	for name, file := range map[string]string{
+		"bad thinking":        `{"thinking":"maybe"}`,
+		"bad system mode":     `{"system_prompt":{"mode":"sometimes"}}`,
+		"profiles not object": `{"profiles":[]}`,
+		"profile bad params":  `{"profiles":{"x":{"params":[]}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".json")
+			if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// A malformed optional section is ignored on load; it must not crash.
+			cfg, err := Parse([]string{"--config", path, "--log", filepath.Join(dir, "p.log")}, envOf(nil))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if cfg == nil {
+				t.Fatal("nil config")
+			}
+		})
+	}
+}
+
+func TestApplyPolicyAndPreservesUnknownKeys(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"inspector":{"capture_bodies":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
+
+	payload := map[string]json.RawMessage{
+		"thinking":      json.RawMessage(`"on"`),
+		"system_prompt": json.RawMessage(`{"mode":"inject-if-missing","text":"hi"}`),
+		"profiles":      json.RawMessage(`{"custom":{"thinking":"off","params":{"top_k":5}}}`),
+		"profile":       json.RawMessage(`"custom"`),
+	}
+	if err := cfg.Apply(payload); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	resolved, ok := cfg.Policy("")
+	if !ok || resolved.Thinking != policy.ThinkingOff || string(resolved.Params["top_k"]) != "5" {
+		t.Errorf("policy = %+v (ok %v)", resolved, ok)
+	}
+	if cfg.ActiveProfile() != "custom" {
+		t.Errorf("active profile = %q", cfg.ActiveProfile())
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document["inspector"]; !ok {
+		t.Errorf("unknown key was dropped: %v", document)
+	}
+	if document["thinking"] != "on" || document["profile"] != "custom" {
+		t.Errorf("document = %v", document)
+	}
+
+	// Rejected updates must not change the live policy.
+	if err := cfg.Apply(map[string]json.RawMessage{"thinking": json.RawMessage(`"bad"`)}); err == nil {
+		t.Fatal("bad thinking was accepted")
+	}
+	if got := cfg.Thinking(); got != policy.ThinkingOn {
+		t.Errorf("global thinking after rejected Apply = %q", got)
+	}
+}
+
+func TestInspectorAndStorageConfig(t *testing.T) {
+	cfg := parse(t, tempPaths(t), nil)
+	inspectorState := cfg.Inspector()
+	if !inspectorState.Enabled || inspectorState.CaptureBodies {
+		t.Errorf("defaults = %+v", inspectorState)
+	}
+	if inspectorState.MaxBodyBytes != DefaultInspectorMaxBodyBytes || inspectorState.RetentionDays != DefaultRetentionDays {
+		t.Errorf("defaults = %+v", inspectorState)
+	}
+	if cfg.Storage().Path == "" || strings.Contains(cfg.Storage().Path, LegacyDir) {
+		t.Errorf("storage path = %q", cfg.Storage().Path)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "custom.db")
+	cfg = parse(t, append(tempPaths(t),
+		"--no-inspector",
+		"--capture-bodies",
+		"--db", dbPath,
+		"--retention-days", "3",
+		"--max-rows", "12",
+	), nil)
+	inspectorState = cfg.Inspector()
+	if inspectorState.Enabled || !inspectorState.CaptureBodies {
+		t.Errorf("flags = %+v", inspectorState)
+	}
+	if inspectorState.RetentionDays != 3 || inspectorState.MaxRows != 12 {
+		t.Errorf("retention = %+v", inspectorState)
+	}
+	if cfg.Storage().Path != dbPath {
+		t.Errorf("storage path = %q, want %q", cfg.Storage().Path, dbPath)
+	}
+}
+
+func TestApplyInspectorAndStorage(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
+
+	payload := map[string]json.RawMessage{
+		"inspector": json.RawMessage(`{"capture_bodies":true,"max_body_bytes":1024,"retention_days":2,"max_rows":7}`),
+		"storage":   json.RawMessage(`{"path":"` + filepath.ToSlash(filepath.Join(dir, "db.sqlite")) + `"}`),
+	}
+	if err := cfg.Apply(payload); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	inspectorState := cfg.Inspector()
+	if !inspectorState.CaptureBodies || inspectorState.MaxBodyBytes != 1024 || inspectorState.RetentionDays != 2 || inspectorState.MaxRows != 7 {
+		t.Errorf("inspector = %+v", inspectorState)
+	}
+	if cfg.Storage().Path != filepath.Join(dir, "db.sqlite") {
+		t.Errorf("storage = %q", cfg.Storage().Path)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document["inspector"]; !ok {
+		t.Errorf("document missing inspector: %v", document)
+	}
+	if _, ok := document["storage"]; !ok {
+		t.Errorf("document missing storage: %v", document)
+	}
+
+	for _, raw := range []string{
+		`{"inspector":{"capture_bodies":"yes"}}`,
+		`{"inspector":{"retention_days":-1}}`,
+		`{"storage":{"path":42}}`,
+	} {
+		var bad map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &bad); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Apply(bad); err == nil {
+			t.Errorf("Apply(%s) succeeded", raw)
+		}
 	}
 }
 
@@ -422,16 +807,23 @@ func TestLanguageResolution(t *testing.T) {
 	if got := parse(t, tempPaths(t), nil).Lang(); got != i18n.ZH {
 		t.Errorf("default Lang = %q, want zh", got)
 	}
+	if got := parse(t, tempPaths(t), map[string]string{"LLM_WORKBENCH_LANG": "en"}).Lang(); got != i18n.EN {
+		t.Errorf("LLM_WORKBENCH_LANG=en Lang = %q", got)
+	}
+	// The pre-rename variable remains a lower-priority alias.
 	if got := parse(t, tempPaths(t), map[string]string{"ONP_LANG": "en"}).Lang(); got != i18n.EN {
 		t.Errorf("ONP_LANG=en Lang = %q", got)
+	}
+	if got := parse(t, tempPaths(t), map[string]string{"LLM_WORKBENCH_LANG": "zh", "ONP_LANG": "en"}).Lang(); got != i18n.ZH {
+		t.Errorf("LLM_WORKBENCH_LANG should beat ONP_LANG, got %q", got)
 	}
 	if got := parse(t, tempPaths(t), map[string]string{"LANG": "en_US.UTF-8"}).Lang(); got != i18n.EN {
 		t.Errorf("LANG=en_US.UTF-8 Lang = %q", got)
 	}
 	// CLI beats the environment.
 	if got := parse(t, append(tempPaths(t), "--lang", "zh"),
-		map[string]string{"ONP_LANG": "en"}).Lang(); got != i18n.ZH {
-		t.Errorf("--lang zh over ONP_LANG=en = %q", got)
+		map[string]string{"LLM_WORKBENCH_LANG": "en"}).Lang(); got != i18n.ZH {
+		t.Errorf("--lang zh over LLM_WORKBENCH_LANG=en = %q", got)
 	}
 	// auto defers to the locale.
 	if got := parse(t, append(tempPaths(t), "--lang", "auto"),
@@ -455,8 +847,8 @@ func TestLanguageResolution(t *testing.T) {
 		t.Error("--lang fr was accepted")
 	}
 	// The internal value must be a real language: ZH/EN only.
-	if got := parse(t, tempPaths(t), map[string]string{"ONP_LANG": "klingon"}).Lang(); got != i18n.ZH {
-		t.Errorf("unknown ONP_LANG Lang = %q, want zh", got)
+	if got := parse(t, tempPaths(t), map[string]string{"LLM_WORKBENCH_LANG": "klingon"}).Lang(); got != i18n.ZH {
+		t.Errorf("unknown LLM_WORKBENCH_LANG Lang = %q, want zh", got)
 	}
 }
 

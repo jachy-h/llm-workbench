@@ -17,11 +17,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jachy-h/ollama-nothink-proxy/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/i18n"
 )
 
 // Label is the launchd job label and plist base name.
-const Label = "com.github.ollama-nothink-proxy"
+const Label = "com.github.llm-workbench"
+
+// LegacyLabel is the pre-rename launchd label. It is only reported by
+// "migrate"; the new binary never loads or edits it.
+const LegacyLabel = "com.github.ollama-nothink-proxy"
 
 const launchctlTimeout = 15 * time.Second
 
@@ -51,6 +55,22 @@ func PlistPath() string {
 		home = "~"
 	}
 	return filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+}
+
+// LegacyPlistPath is the pre-rename LaunchAgent path.
+func LegacyPlistPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "~"
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", LegacyLabel+".plist")
+}
+
+// LegacyInstalled reports whether the pre-rename plist still exists. The
+// migration command only reports it; it never unloads or deletes it.
+func LegacyInstalled() bool {
+	_, err := os.Stat(LegacyPlistPath())
+	return err == nil
 }
 
 // State reports the current install/load status.
@@ -209,7 +229,7 @@ func RenderPlist(command []string, logPath, workingDir string) string {
 	// launchd does not inherit the shell locale, so pin the language of the
 	// supervised instance to the one this UI runs in.
 	b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
-	writeKeyString(&b, "ONP_LANG", i18n.Current().String())
+	writeKeyString(&b, "LLM_WORKBENCH_LANG", i18n.Current().String())
 	b.WriteString("\t</dict>\n")
 	writeKeyString(&b, "StandardOutPath", logPath)
 	writeKeyString(&b, "StandardErrorPath", logPath)

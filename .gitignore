@@ -1,9 +1,13 @@
-dist/
-build/
+/dist/
+/build/
 *.log
 .DS_Store
 
 # Go
-/ollama-nothink-proxy
+/llm-workbench
 *.test
 coverage.out
+
+# Frontend
+web/node_modules/
+web/.vite/

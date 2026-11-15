@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jachy-h/ollama-nothink-proxy/internal/config"
-	"github.com/jachy-h/ollama-nothink-proxy/internal/i18n"
-	"github.com/jachy-h/ollama-nothink-proxy/internal/logstore"
+	"github.com/jachy-h/llm-workbench/internal/config"
+	"github.com/jachy-h/llm-workbench/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/logstore"
 )
 
 type fixture struct {
@@ -52,7 +52,7 @@ func newFixture(t *testing.T) *fixture {
 		Log:      f.logs,
 		Defaults: DefaultsFor(),
 		LaunchCommand: func() []string {
-			return []string{"/usr/local/bin/ollama-nothink-proxy", "--foreground"}
+			return []string{"/usr/local/bin/llm-workbench", "--foreground"}
 		},
 		Workdir:  "/tmp",
 		Stopping: f.stopping,
@@ -67,6 +67,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) do(method, path string, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.RemoteAddr = "127.0.0.1:54321"
+	req.Host = "127.0.0.1:11500"
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -97,7 +98,7 @@ func TestPageServed(t *testing.T) {
 			t.Errorf("%s Content-Type = %q", path, ct)
 		}
 		page := rec.Body.String()
-		for _, needle := range []string{"ollama-nothink-proxy", "关闭服务", "恢复默认", "日志", "logPause", "setInterval"} {
+		for _, needle := range []string{"llm-workbench", "关闭服务", "恢复默认", "日志", "logPause", "setInterval"} {
 			if !strings.Contains(page, needle) {
 				t.Errorf("%s page missing %q", path, needle)
 			}
@@ -132,6 +133,7 @@ func TestLoopbackOnly(t *testing.T) {
 	}
 
 	req.RemoteAddr = "[::1]:5555"
+	req.Host = "[::1]:11500"
 	rec = httptest.NewRecorder()
 	f.handler.Handle(rec, req)
 	if rec.Code != http.StatusOK {
@@ -193,7 +195,7 @@ func TestStateShape(t *testing.T) {
 		t.Errorf("defaults.params = %v", defaultParams)
 	}
 	autostart := state["autostart"].(map[string]any)
-	if autostart["label"] != "com.github.ollama-nothink-proxy" {
+	if autostart["label"] != "com.github.llm-workbench" {
 		t.Errorf("autostart.label = %v", autostart["label"])
 	}
 	if autostart["supported"] != (runtime.GOOS == "darwin") {

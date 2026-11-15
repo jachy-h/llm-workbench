@@ -12,8 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jachy-h/ollama-nothink-proxy/internal/i18n"
-	"github.com/jachy-h/ollama-nothink-proxy/internal/inject"
+	"github.com/jachy-h/llm-workbench/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/inject"
+	"github.com/jachy-h/llm-workbench/internal/inspect"
+	"github.com/jachy-h/llm-workbench/internal/policy"
+	"github.com/jachy-h/llm-workbench/internal/requestid"
 )
 
 // ServeHTTP is the whole request pipeline: path check, concurrency slot,
@@ -41,15 +44,40 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { <-h.sem }()
 
-	if kind := inject.ChatPathKind(r.URL.Path); kind != inject.KindNone && !bodyless(r.Method) {
+	kind := inject.ChatPathKind(r.URL.Path)
+	if h.opts.CaptureRecorder != nil && kind != inject.KindNone && !bodyless(r.Method) {
+		st.capture = &inspect.Capture{
+			ID:       requestid.New(),
+			Started:  start,
+			Source:   "proxy",
+			Provider: "ollama",
+			Method:   r.Method,
+			Path:     r.URL.Path,
+			Client:   clientIP(r),
+		}
+	}
+	var sw *statusWriter
+	var cw *captureWriter
+	defer func() { h.finish(st, sw, cw) }()
+
+	if kind != inject.KindNone && !bodyless(r.Method) {
 		if status, message := h.rewriteChat(r, kind); status != 0 {
+			if st.capture != nil {
+				st.capture.Status = status
+				st.capture.Error = message
+			}
 			h.logLine(r, st.note, status, message, 0, h.now().Sub(start))
 			writeJSONError(w, status, message)
 			return
 		}
 	}
 
-	sw := &statusWriter{ResponseWriter: w}
+	rw := w
+	if st.capture != nil {
+		cw = &captureWriter{ResponseWriter: w, capture: st.capture, limit: h.opts.CaptureBodyLimit}
+		rw = cw
+	}
+	sw = &statusWriter{ResponseWriter: rw}
 	defer func() {
 		status := sw.status
 		if status == 0 {
@@ -103,6 +131,10 @@ func (h *Handler) acquire(ctx context.Context) bool {
 // rewriteChat reads at most MaxBodySize bytes and rewrites the body in place.
 // A non-zero status is an error the caller must send to the client.
 func (h *Handler) rewriteChat(r *http.Request, kind inject.Kind) (status int, message string) {
+	pol, status, message := h.requestPolicy(r)
+	if status != 0 {
+		return status, message
+	}
 	if r.Body == nil {
 		return 0, ""
 	}
@@ -114,6 +146,10 @@ func (h *Handler) rewriteChat(r *http.Request, kind inject.Kind) (status int, me
 	if int64(len(data)) > h.opts.MaxBodySize {
 		return http.StatusRequestEntityTooLarge,
 			fmt.Sprintf(i18n.T("proxy.errBodyTooLarge"), h.opts.MaxBodySize)
+	}
+	if capture := stateFrom(r).capture; capture != nil {
+		capture.RequestOriginal = append([]byte(nil), data...)
+		capture.RequestForwarded = append([]byte(nil), data...)
 	}
 
 	// Restore the body first: every early return below is a pass-through.
@@ -129,14 +165,13 @@ func (h *Handler) rewriteChat(r *http.Request, kind inject.Kind) (status int, me
 	}
 
 	var out map[string]json.RawMessage
-	params := h.settings.Params()
 	switch kind {
 	case inject.KindV1:
-		out = inject.InjectV1(body, params)
+		out = inject.ApplyV1(body, pol)
 		stateFrom(r).note = noteInjectedV1
 	case inject.KindNative:
 		var ok bool
-		out, ok = inject.InjectNative(body, params)
+		out, ok = inject.ApplyNative(body, pol)
 		if !ok {
 			stateFrom(r).note = noteNonJSON
 			return 0, ""
@@ -149,8 +184,33 @@ func (h *Handler) rewriteChat(r *http.Request, kind inject.Kind) (status int, me
 		stateFrom(r).note = noteNonJSON
 		return 0, ""
 	}
+	if capture := stateFrom(r).capture; capture != nil {
+		capture.RequestForwarded = append([]byte(nil), encoded...)
+	}
 	setRequestBody(r, encoded)
 	return 0, ""
+}
+
+// requestPolicy resolves the per-request profile and thinking override. The
+// X-Workbench-* headers are consumed here and never forwarded upstream.
+func (h *Handler) requestPolicy(r *http.Request) (pol policy.Policy, status int, message string) {
+	profile := r.Header.Get("X-Workbench-Profile")
+	thinking := r.Header.Get("X-Workbench-Thinking")
+	r.Header.Del("X-Workbench-Profile")
+	r.Header.Del("X-Workbench-Thinking")
+
+	resolved, ok := h.settings.Policy(profile)
+	if !ok {
+		return policy.Policy{}, http.StatusBadRequest, fmt.Sprintf(i18n.T("proxy.errProfile"), profile)
+	}
+	if thinking != "" {
+		mode, ok := policy.ParseThinkingMode(thinking)
+		if !ok {
+			return policy.Policy{}, http.StatusBadRequest, fmt.Sprintf(i18n.T("proxy.errThinking"), thinking)
+		}
+		resolved.Thinking = mode
+	}
+	return resolved, 0, ""
 }
 
 // setRequestBody replaces the body and keeps ContentLength / transfer

@@ -1,15 +1,18 @@
 SHELL := /bin/bash
 
-BINARY  := ollama-nothink-proxy
+BINARY  := llm-workbench
 VERSION := $(shell sed -n 's/^[[:space:]]*Version = "\(.*\)"/\1/p' internal/config/config.go)
 DIST    := dist
 LDFLAGS := -s -w
 PLATFORMS := darwin/arm64 darwin/amd64 windows/amd64 linux/amd64 linux/arm64
 
-.PHONY: build test race vet fmt dist clean clean-dist
+.PHONY: build test race vet fmt web dist clean clean-dist
 
-build:
-	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/ollama-nothink-proxy
+build: web
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/llm-workbench
+
+web:
+	cd web && npm ci --no-audit --no-fund && npm run build
 
 test:
 	go test ./...
@@ -23,7 +26,7 @@ vet:
 fmt:
 	gofmt -l -w cmd internal tests
 
-dist: clean-dist
+dist: web clean-dist
 	@set -euo pipefail; \
 	for platform in $(PLATFORMS); do \
 		goos="$${platform%/*}"; goarch="$${platform#*/}"; \
@@ -33,7 +36,7 @@ dist: clean-dist
 		mkdir -p "$$dir"; \
 		echo "building $$name"; \
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch \
-			go build -trimpath -ldflags="$(LDFLAGS)" -o "$$dir/$(BINARY)$$ext" ./cmd/ollama-nothink-proxy; \
+			go build -trimpath -ldflags="$(LDFLAGS)" -o "$$dir/$(BINARY)$$ext" ./cmd/llm-workbench; \
 		cp README.md README.en.md "$$dir/"; \
 		if [ "$$goos" = "windows" ]; then \
 			(cd $(DIST) && zip -qr "$$name.zip" "$$name"); \

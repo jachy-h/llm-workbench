@@ -2,27 +2,27 @@
 <!--
   登录自启示例（中文版；英文版见同目录的 *.en.plist）。用前必改：
     1. /Users/YOURNAME 占位符不能直接用，请替换成你的真实绝对路径（launchd 不展开变量）
-    2. 二进制路径按实际位置改（`which ollama-nothink-proxy` 或本地构建产物）
+    2. 二进制路径按实际位置改（`which llm-workbench` 或本地构建产物）
   安装：
-    cp contrib/com.github.ollama-nothink-proxy.plist ~/Library/LaunchAgents/
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.ollama-nothink-proxy.plist
+    cp contrib/com.github.llm-workbench.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.llm-workbench.plist
   卸载：
-    launchctl bootout gui/$(id -u)/com.github.ollama-nothink-proxy
+    launchctl bootout gui/$(id -u)/com.github.llm-workbench
 
   通常不用手改这份模板：portal 里的「开机自动启动」开关会按当前二进制路径、
   当前界面语言生成同样的 plist。
 
-  语言：ONP_LANG 决定 launchd 实例的输出语言（zh / en）。launchd 不继承终端
+  语言：LLM_WORKBENCH_LANG 决定 launchd 实例的输出语言（zh / en）。launchd 不继承终端
   的 LANG，所以这里显式写一条；去掉它则跟随系统 locale，认不出就用中文。
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.github.ollama-nothink-proxy</string>
+    <string>com.github.llm-workbench</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/YOURNAME/bin/ollama-nothink-proxy</string>
+        <string>/Users/YOURNAME/bin/llm-workbench</string>
         <string>--port</string>
         <string>11500</string>
         <!-- 让 launchd 直接看住进程；登录时不要弹浏览器 -->
@@ -32,7 +32,7 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>ONP_LANG</key>
+        <key>LLM_WORKBENCH_LANG</key>
         <string>zh</string>
     </dict>
 
@@ -42,9 +42,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/YOURNAME/Library/Logs/ollama-nothink-proxy.log</string>
+    <string>/Users/YOURNAME/Library/Logs/llm-workbench.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/YOURNAME/Library/Logs/ollama-nothink-proxy.log</string>
+    <string>/Users/YOURNAME/Library/Logs/llm-workbench.log</string>
 
     <!-- Ollama 先起来再起代理, 免得上游还没监听 -->
     <key>ThrottleInterval</key>

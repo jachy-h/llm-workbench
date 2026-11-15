@@ -35,9 +35,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	binaryPath = filepath.Join(dir, "ollama-nothink-proxy")
+	binaryPath = filepath.Join(dir, "llm-workbench")
 
-	build := exec.Command("go", "build", "-trimpath", "-o", binaryPath, "./cmd/ollama-nothink-proxy")
+	build := exec.Command("go", "build", "-trimpath", "-o", binaryPath, "./cmd/llm-workbench")
 	build.Dir = root
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "build failed: %v\n%s", err, out)
@@ -113,12 +113,12 @@ func testEnv(overrides map[string]string) []string {
 	delete(environ, "PROXY_PARAMS")
 	// Language: the assertions are written in Chinese, so pin the language
 	// instead of inheriting the developer's locale. A test that wants English
-	// passes ONP_LANG=en in overrides.
-	delete(environ, "ONP_LANG")
+	// passes LLM_WORKBENCH_LANG=en in overrides.
+	delete(environ, "LLM_WORKBENCH_LANG")
 	delete(environ, "LANG")
 	delete(environ, "LC_ALL")
 	delete(environ, "LC_MESSAGES")
-	environ["ONP_LANG"] = "zh"
+	environ["LLM_WORKBENCH_LANG"] = "zh"
 	for k, v := range overrides {
 		environ[k] = v
 	}
@@ -137,6 +137,9 @@ func startProxy(t *testing.T, args []string, env map[string]string) *runningProx
 	// Never collide with a proxy the developer is already running on 11500.
 	if !hasFlag(args, "--port") && env["PORT"] == "" {
 		args = append(args, "--port", strconv.Itoa(freePort(t)))
+	}
+	if !hasFlag(args, "--db") {
+		args = append(args, "--db", filepath.Join(t.TempDir(), "workbench.db"))
 	}
 	cmd := exec.Command(binaryPath, args...)
 	cmd.Env = testEnv(env)
@@ -291,7 +294,7 @@ func TestVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--version: %v (%s)", err, out)
 	}
-	if got := strings.TrimSpace(string(out)); got != "ollama-nothink-proxy 0.2.0" {
+	if got := strings.TrimSpace(string(out)); got != "llm-workbench 0.6.0" {
 		t.Errorf("--version = %q", got)
 	}
 }
@@ -303,7 +306,8 @@ func TestHelp(t *testing.T) {
 	}
 	for _, needle := range []string{
 		"--set", "--no-defaults", "--max-concurrent", "--max-body-size",
-		"PROXY_PARAMS", "--version",
+		"PROXY_PARAMS", "--version", "migrate", "--thinking", "--system-prompt", "--profile",
+		"--no-inspector", "--capture-bodies", "--db", "--retention-days", "--max-rows",
 	} {
 		if !strings.Contains(string(out), needle) {
 			t.Errorf("--help is missing %q", needle)
@@ -345,11 +349,12 @@ func TestBannerAndPassthrough(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", filepath.Join(dir, "config.json"),
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 	}, nil)
 
 	banner := p.stdout.String()
 	for _, needle := range []string{
-		"ollama-nothink-proxy v0.2.0",
+		"llm-workbench v0.6.0",
 		"listen    " + p.base,
 		"upstream  " + up.server.URL,
 		"inject    keep_alive=\"30m\", max_tokens=96, temperature=0.2, top_p=0.9",
@@ -381,6 +386,7 @@ func TestEnvPortUpstreamAndConfigFile(t *testing.T) {
 	p := startProxy(t, []string{
 		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 	}, map[string]string{
 		"PORT":         fmt.Sprint(port),
 		"PROXY_PARAMS": `{"max_tokens": 42}`,
@@ -412,6 +418,7 @@ func TestNoDefaultsAndCLISet(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", filepath.Join(dir, "config.json"),
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 		"--no-defaults",
 		"--set", "temperature=0",
 		"--set", "max_tokens=7",
@@ -474,6 +481,7 @@ func TestGracefulShutdown(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", filepath.Join(dir, "config.json"),
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 	}, nil)
 
 	if err := p.stopAndWait(t); err != nil {
@@ -506,6 +514,7 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 	}, nil)
 
 	// The portal page is embedded in the binary, not read from disk.
@@ -665,6 +674,7 @@ func TestBackgroundModeSpawnsAndPortalShutsDown(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", configPath,
 		"--log", logPath,
+		"--db", filepath.Join(dir, "workbench.db"),
 		"--no-browser",
 	)
 	cmd.Env = testEnv(nil)
@@ -740,6 +750,7 @@ func TestBackgroundModeReusesRunningInstance(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", filepath.Join(dir, "config.json"),
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 		"--no-browser",
 	}
 
@@ -785,6 +796,7 @@ func TestRestartReplacesRunningInstance(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", filepath.Join(dir, "config.json"),
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 		"--no-browser",
 	}
 
@@ -854,6 +866,7 @@ func TestRestartStartsWhenNothingIsRunning(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", filepath.Join(dir, "config.json"),
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 		"--no-browser",
 	)
 	cmd.Env = testEnv(nil)
@@ -896,14 +909,14 @@ func inspectState(base string) (map[string]any, bool) {
 }
 
 // TestEnglishBannerAndHelp covers the English side of the language switch:
-// --lang on the command line and ONP_LANG in the environment.
+// --lang on the command line and LLM_WORKBENCH_LANG in the environment.
 func TestEnglishBannerAndHelp(t *testing.T) {
 	out, err := exec.Command(binaryPath, "--lang", "en", "--help").CombinedOutput()
 	if err != nil {
 		t.Fatalf("--lang en --help: %v (%s)", err, out)
 	}
 	for _, needle := range []string{
-		"Usage: ollama-nothink-proxy", "start the proxy", "--max-body-size", "ONP_LANG",
+		"Usage: llm-workbench", "start the proxy", "--max-body-size", "LLM_WORKBENCH_LANG",
 	} {
 		if !strings.Contains(string(out), needle) {
 			t.Errorf("English --help missing %q:\n%s", needle, out)
@@ -919,7 +932,8 @@ func TestEnglishBannerAndHelp(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", filepath.Join(dir, "config.json"),
 		"--log", filepath.Join(dir, "proxy.log"),
-	}, map[string]string{"ONP_LANG": "en"})
+		"--db", filepath.Join(dir, "workbench.db"),
+	}, map[string]string{"LLM_WORKBENCH_LANG": "en"})
 
 	banner := p.stdout.String()
 	for _, needle := range []string{
@@ -945,7 +959,7 @@ func TestEnglishBannerAndHelp(t *testing.T) {
 	if !strings.Contains(page, `<html lang="en">`) {
 		t.Error("portal page was not seeded with lang=en")
 	}
-	if strings.Contains(page, "__ONP_LANG__") {
+	if strings.Contains(page, "__LLM_WORKBENCH_LANG__") {
 		t.Error("portal page still contains the language placeholder")
 	}
 
@@ -988,6 +1002,7 @@ func TestLanguageSwitchThroughPortal(t *testing.T) {
 		"--upstream", up.server.URL,
 		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 	}, nil)
 
 	state := waitForState(t, p.base, 5*time.Second)
@@ -1040,5 +1055,224 @@ func TestLanguageSwitchThroughPortal(t *testing.T) {
 			t.Fatalf("English log line never appeared: %s", logs)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestThinkingAndSystemPromptEndToEnd verifies the new policy flags through
+// the compiled binary, not just the package-level functions.
+func TestThinkingAndSystemPromptEndToEnd(t *testing.T) {
+	up := newEchoUpstream(t)
+	dir := t.TempDir()
+	p := startProxy(t, []string{
+		"--upstream", up.server.URL,
+		"--config", filepath.Join(dir, "config.json"),
+		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
+		"--no-defaults",
+		"--thinking", "passthrough",
+		"--system-prompt", "be terse",
+	}, nil)
+
+	_, echo := postJSON(t, p.base, "/v1/chat/completions",
+		`{"model":"m","think":true,"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`)
+	got := decodeBody(t, echo.Body)
+	if got["think"] != true || got["reasoning_effort"] != "high" {
+		t.Errorf("thinking passthrough changed the body: %v", got)
+	}
+	messages, ok := got["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("messages = %v", got["messages"])
+	}
+	first := messages[0].(map[string]any)
+	if first["role"] != "system" || first["content"] != "be terse" {
+		t.Errorf("system prompt was not injected: %v", first)
+	}
+
+	// A request-level thinking override wins for this request only.
+	req, err := http.NewRequest(http.MethodPost, p.base+"/v1/chat/completions",
+		strings.NewReader(`{"model":"m","think":true,"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Workbench-Thinking", "off")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var envelope echoResult
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	got = decodeBody(t, envelope.Body)
+	if got["reasoning_effort"] != "none" {
+		t.Errorf("request thinking override did not win: %v", got)
+	}
+}
+
+// TestInspectorCapturesThroughBinary verifies the full wiring: proxy capture,
+// async SQLite write, workbench API, detail and delete.
+func TestInspectorCapturesThroughBinary(t *testing.T) {
+	up := newEchoUpstream(t)
+	dir := t.TempDir()
+	p := startProxy(t, []string{
+		"--upstream", up.server.URL,
+		"--config", filepath.Join(dir, "config.json"),
+		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
+		"--capture-bodies",
+	}, nil)
+
+	// Metadata is captured even without bodies; this test asks for both.
+	status, _ := postJSON(t, p.base, "/v1/chat/completions",
+		`{"model":"qwen3:8b","messages":[{"role":"system","content":"be terse"},{"role":"user","content":"hi"}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("chat status = %d", status)
+	}
+
+	var list struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		body := getPage(t, p.base+"/__workbench/api/requests")
+		if err := json.Unmarshal([]byte(body), &list); err != nil {
+			t.Fatalf("list JSON: %v\n%s", err, body)
+		}
+		if list.Total > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("request never appeared: %s", body)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	id, _ := list.Items[0]["id"].(string)
+	if id == "" {
+		t.Fatalf("no id in %v", list.Items[0])
+	}
+	if _, present := list.Items[0]["request_original"]; present {
+		t.Error("list response leaked bodies")
+	}
+
+	detail := getPage(t, p.base+"/__workbench/api/requests/"+id)
+	var record map[string]any
+	if err := json.Unmarshal([]byte(detail), &record); err != nil {
+		t.Fatalf("detail JSON: %v\n%s", err, detail)
+	}
+	if record["model"] != "qwen3:8b" || record["system_prompt"] != "be terse" {
+		t.Errorf("detail = %v", record)
+	}
+	if original, _ := record["request_original"].(string); !strings.Contains(original, `"model":"qwen3:8b"`) {
+		t.Errorf("original body = %q", original)
+	}
+	if response, _ := record["response_body"].(string); !strings.Contains(response, "qwen3:8b") {
+		t.Errorf("response body = %q", response)
+	}
+
+	// The UI shell is served from the embedded build.
+	page := getPage(t, p.base+"/__workbench/")
+	if !strings.Contains(page, `<div id="root">`) {
+		t.Errorf("workbench page missing root: %s", page)
+	}
+
+	request, err := http.NewRequest(http.MethodDelete, p.base+"/__workbench/api/requests/"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("delete status = %d", resp.StatusCode)
+	}
+	detail = getPage(t, p.base+"/__workbench/api/requests/"+id)
+	if !strings.Contains(detail, "not found") {
+		t.Errorf("detail after delete = %s", detail)
+	}
+}
+
+// TestMigrateCopiesLegacyConfig covers the rename migration: the old config
+// is copied to the new path, the old file is kept, and the command is
+// idempotent.
+func TestMigrateCopiesLegacyConfig(t *testing.T) {
+	home := t.TempDir()
+	legacyPaths := []string{
+		filepath.Join(home, "Library", "Application Support", "ollama-nothink-proxy", "config.json"),
+		filepath.Join(home, ".config", "ollama-nothink-proxy", "config.json"),
+	}
+	for _, path := range legacyPaths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{"params":{"temperature":0.42}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newPath := filepath.Join(home, "new", "config.json")
+	env := map[string]string{
+		"HOME":            home,
+		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
+		"XDG_STATE_HOME":  filepath.Join(home, ".state"),
+	}
+	runMigrate := func() []byte {
+		t.Helper()
+		cmd := exec.Command(binaryPath, "migrate", "--config", newPath)
+		cmd.Env = testEnv(env)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("migrate: %v\n%s", err, out)
+		}
+		return out
+	}
+
+	out := runMigrate()
+	if !strings.Contains(string(out), "已把旧配置复制到") {
+		t.Errorf("migrate output = %s", out)
+	}
+	data, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf("new config: %v", err)
+	}
+	if !strings.Contains(string(data), "0.42") {
+		t.Errorf("new config = %s", data)
+	}
+	for _, path := range legacyPaths {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("legacy config was removed: %s: %v", path, err)
+		}
+	}
+
+	// A second run must not overwrite the destination.
+	if err := os.WriteFile(newPath, []byte(`{"params":{"temperature":0.1}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = runMigrate()
+	if !strings.Contains(string(out), "新配置已存在") {
+		t.Errorf("second migrate output = %s", out)
+	}
+	data, _ = os.ReadFile(newPath)
+	if !strings.Contains(string(data), "0.1") {
+		t.Errorf("destination overwritten: %s", data)
+	}
+
+	// The old LaunchAgent is reported, never removed automatically.
+	legacyPlist := filepath.Join(home, "Library", "LaunchAgents", "com.github.ollama-nothink-proxy.plist")
+	if err := os.MkdirAll(filepath.Dir(legacyPlist), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPlist, []byte("<plist/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = runMigrate()
+	if !strings.Contains(string(out), "旧 LaunchAgent") || !strings.Contains(string(out), legacyPlist) {
+		t.Errorf("migrate did not report the old LaunchAgent:\n%s", out)
+	}
+	if _, err := os.Stat(legacyPlist); err != nil {
+		t.Errorf("migrate removed the old LaunchAgent: %v", err)
 	}
 }

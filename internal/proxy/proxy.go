@@ -5,6 +5,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,9 +16,12 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
-	"github.com/jachy-h/ollama-nothink-proxy/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/inspect"
+	"github.com/jachy-h/llm-workbench/internal/policy"
 )
 
 const (
@@ -49,6 +53,9 @@ type Settings interface {
 	UpstreamURL() *url.URL
 	Timeout() time.Duration
 	Params() map[string]json.RawMessage
+	// Policy resolves a named profile ("" means the configured default).
+	// ok is false for an unknown profile.
+	Policy(profile string) (policy.Policy, bool)
 }
 
 // Recorder receives one structured entry per proxied request.
@@ -77,6 +84,11 @@ type Options struct {
 	// AcquireTimeout bounds the wait for a concurrency slot: 0 uses the 2s
 	// default, a negative value waits until the client goes away.
 	AcquireTimeout time.Duration
+	// CaptureRecorder receives one capture per chat request; may be nil.
+	CaptureRecorder inspect.Recorder
+	// CaptureBodyLimit bounds the in-memory response body kept for Recorder
+	// (default 256 KiB). It never changes what is sent to the client.
+	CaptureBodyLimit int
 	// Verbose logs every request to Console.
 	Verbose bool
 	// Recorder receives one structured entry per request; may be nil.
@@ -97,6 +109,13 @@ type staticSettings struct {
 func (s staticSettings) UpstreamURL() *url.URL              { return s.upstream }
 func (s staticSettings) Timeout() time.Duration             { return s.timeout }
 func (s staticSettings) Params() map[string]json.RawMessage { return s.params }
+
+func (s staticSettings) Policy(profile string) (policy.Policy, bool) {
+	if profile != "" {
+		return policy.Policy{}, false
+	}
+	return policy.New(s.params), true
+}
 
 // Handler is the http.Handler that fronts Ollama.
 type Handler struct {
@@ -133,6 +152,9 @@ func New(opts Options) (*Handler, error) {
 	}
 	if opts.MaxBodySize < 1 {
 		opts.MaxBodySize = defaultMaxBodySize
+	}
+	if opts.CaptureBodyLimit < 1 {
+		opts.CaptureBodyLimit = 256 << 10
 	}
 	if opts.AcquireTimeout == 0 {
 		opts.AcquireTimeout = defaultAcquireTimeout
@@ -236,8 +258,9 @@ type stateKey struct{}
 // reqState carries the injection note and any proxy error from the request
 // path to the single log line emitted when the request finishes.
 type reqState struct {
-	note string
-	err  error
+	note    string
+	err     error
+	capture *inspect.Capture
 }
 
 func stateFrom(r *http.Request) *reqState {
@@ -301,3 +324,66 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 
 // Unwrap lets http.NewResponseController find Flush on the real writer.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// captureWriter tees the response body into a bounded buffer while writing to
+// the client. It must never buffer more than limit bytes.
+type captureWriter struct {
+	http.ResponseWriter
+	capture   *inspect.Capture
+	limit     int
+	buffer    bytes.Buffer
+	truncated bool
+}
+
+func (w *captureWriter) Write(p []byte) (int, error) {
+	if w.capture != nil && len(p) > 0 && w.capture.TTFT == 0 {
+		w.capture.TTFT = time.Since(w.capture.Started)
+	}
+	if w.capture != nil && w.limit > 0 {
+		remaining := w.limit - w.buffer.Len()
+		if remaining > 0 {
+			chunk := p
+			if len(chunk) > remaining {
+				chunk = chunk[:remaining]
+				w.truncated = true
+			}
+			_, _ = w.buffer.Write(chunk)
+		} else {
+			w.truncated = true
+		}
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *captureWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// finish fills the capture metadata and hands it to the recorder.
+func (h *Handler) finish(st *reqState, sw *statusWriter, cw *captureWriter) {
+	capture := st.capture
+	if capture == nil || h.opts.CaptureRecorder == nil {
+		return
+	}
+	capture.Duration = h.now().Sub(capture.Started)
+	if sw != nil {
+		status := sw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		capture.Status = status
+		contentType := strings.ToLower(sw.Header().Get("Content-Type"))
+		if strings.Contains(contentType, "event-stream") || strings.Contains(contentType, "ndjson") {
+			capture.Stream = true
+		}
+	}
+	if capture.Status == 0 {
+		capture.Status = http.StatusOK
+	}
+	if st.err != nil {
+		capture.Error = st.err.Error()
+	}
+	if cw != nil {
+		capture.ResponseBody = append([]byte(nil), cw.buffer.Bytes()...)
+		capture.ResponseTruncated = cw.truncated
+	}
+	h.opts.CaptureRecorder.Record(*capture)
+}

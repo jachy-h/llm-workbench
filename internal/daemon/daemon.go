@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jachy-h/ollama-nothink-proxy/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/i18n"
 )
 
 // Result describes how the background start went.

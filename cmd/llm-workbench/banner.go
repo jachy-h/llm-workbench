@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jachy-h/ollama-nothink-proxy/internal/config"
-	"github.com/jachy-h/ollama-nothink-proxy/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/config"
+	"github.com/jachy-h/llm-workbench/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/policy"
 )
 
 // bannerIndent keeps the startup block off the left edge so it reads as one
@@ -78,6 +79,8 @@ type bannerOptions struct {
 	Note string
 	// Stop is the hint telling the user how to shut this instance down.
 	Stop string
+	// Workbench is the /__workbench URL when the history database is open.
+	Workbench string
 }
 
 // printBanner writes the startup block: what is running, where, how it was
@@ -98,7 +101,7 @@ func printBanner(w io.Writer, cfg *config.Config, portalURL string, opts bannerO
 		dot = p.cyan("●")
 	}
 	fmt.Fprintln(w)
-	line("%s %s", p.bold("ollama-nothink-proxy"), p.dim("v"+strings.TrimPrefix(config.Version, "v")))
+	line("%s %s", p.bold("llm-workbench"), p.dim("v"+strings.TrimPrefix(config.Version, "v")))
 	line("%s %s", dot, p.bold(opts.Status))
 	if opts.Note != "" {
 		line("  %s", p.dim(opts.Note))
@@ -107,6 +110,9 @@ func printBanner(w io.Writer, cfg *config.Config, portalURL string, opts bannerO
 
 	kv("listen", p.link(cfg.ListenURL()))
 	kv("portal", p.link(portalURL))
+	if opts.Workbench != "" {
+		kv("workbench", p.link(opts.Workbench))
+	}
 	kv("upstream", cfg.Upstream())
 	kv("inject", injectSummary(p, cfg))
 	kv("limits", i18n.T("banner.limits",
@@ -161,14 +167,24 @@ func isWide(r rune) bool {
 	return false
 }
 
-// injectSummary renders the injected generation params plus the always-on
-// thinking switch.
+// injectSummary renders the effective params plus the thinking policy.
 func injectSummary(p paint, cfg *config.Config) string {
+	resolved, ok := cfg.Policy("")
+	if !ok {
+		resolved = policy.New(cfg.Params())
+	}
 	body := cfg.ParamSummary()
-	if body == "" {
+	if len(resolved.Params) == 0 {
 		body = i18n.T("common.none")
 	}
-	return body + " " + p.accent(i18n.T("banner.forceOff"))
+	label := i18n.T("banner.forceOff")
+	switch resolved.Thinking {
+	case policy.ThinkingOn:
+		label = i18n.T("banner.thinkingOn")
+	case policy.ThinkingPassthrough:
+		label = i18n.T("banner.thinkingPass")
+	}
+	return body + " " + p.accent(label)
 }
 
 func verboseLabel(p paint, verbose bool) string {

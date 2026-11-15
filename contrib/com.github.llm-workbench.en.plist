@@ -4,19 +4,19 @@
   to this file). Edit before use:
     1. /Users/YOURNAME is a placeholder — launchd does not expand variables,
        so put your real absolute paths in
-    2. point the binary at wherever you installed it (`which ollama-nothink-proxy`
+    2. point the binary at wherever you installed it (`which llm-workbench`
        or your local build)
   Install:
-    cp contrib/com.github.ollama-nothink-proxy.en.plist ~/Library/LaunchAgents/com.github.ollama-nothink-proxy.plist
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.ollama-nothink-proxy.plist
+    cp contrib/com.github.llm-workbench.en.plist ~/Library/LaunchAgents/com.github.llm-workbench.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.llm-workbench.plist
   Remove:
-    launchctl bootout gui/$(id -u)/com.github.ollama-nothink-proxy
+    launchctl bootout gui/$(id -u)/com.github.llm-workbench
 
   You normally do not need this file: the portal's "Start at login" switch
   generates an equivalent plist from the running binary and the current UI
   language.
 
-  Language: ONP_LANG sets the output language of the launchd instance
+  Language: LLM_WORKBENCH_LANG sets the output language of the launchd instance
   (zh / en). launchd does not inherit the shell locale, so it is written out
   here; drop the key to follow the system locale, which falls back to Chinese
   when it cannot tell.
@@ -24,11 +24,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.github.ollama-nothink-proxy</string>
+    <string>com.github.llm-workbench</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/YOURNAME/bin/ollama-nothink-proxy</string>
+        <string>/Users/YOURNAME/bin/llm-workbench</string>
         <string>--port</string>
         <string>11500</string>
         <!-- let launchd supervise the process itself; never open a browser at login -->
@@ -38,7 +38,7 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>ONP_LANG</key>
+        <key>LLM_WORKBENCH_LANG</key>
         <string>en</string>
     </dict>
 
@@ -48,9 +48,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/YOURNAME/Library/Logs/ollama-nothink-proxy.log</string>
+    <string>/Users/YOURNAME/Library/Logs/llm-workbench.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/YOURNAME/Library/Logs/ollama-nothink-proxy.log</string>
+    <string>/Users/YOURNAME/Library/Logs/llm-workbench.log</string>
 
     <!-- start the proxy after Ollama so the upstream is already listening -->
     <key>ThrottleInterval</key>

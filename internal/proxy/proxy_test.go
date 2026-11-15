@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jachy-h/llm-workbench/internal/inspect"
+	"github.com/jachy-h/llm-workbench/internal/policy"
 )
 
 func params(raw string) map[string]json.RawMessage {
@@ -646,5 +649,237 @@ func TestUpstreamDisconnectMidStream(t *testing.T) {
 	resp2, data := do(t, http.MethodGet, p.URL+"/api/tags", "", nil)
 	if resp2.StatusCode != http.StatusOK || string(data) != `{"ok":true}` {
 		t.Errorf("after disconnect: status %d body %s", resp2.StatusCode, data)
+	}
+}
+
+type profileSettings struct {
+	upstream *url.URL
+	timeout  time.Duration
+	params   map[string]json.RawMessage
+	profiles map[string]policy.Policy
+}
+
+func (s profileSettings) UpstreamURL() *url.URL              { return s.upstream }
+func (s profileSettings) Timeout() time.Duration             { return s.timeout }
+func (s profileSettings) Params() map[string]json.RawMessage { return s.params }
+func (s profileSettings) Policy(name string) (policy.Policy, bool) {
+	if name == "" {
+		return policy.New(s.params), true
+	}
+	resolved, ok := s.profiles[name]
+	return resolved, ok
+}
+
+func TestWorkbenchThinkingHeader(t *testing.T) {
+	up := newUpstream(t, echoHandler(t))
+	p := newProxy(t, up, nil)
+
+	headers := map[string]string{
+		"Content-Type":         "application/json",
+		"X-Workbench-Thinking": "passthrough",
+	}
+	resp, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions",
+		`{"model":"m","think":true,"reasoning_effort":"high"}`, headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.StatusCode, data)
+	}
+	got := forwardedBody(t, data)
+	if got["think"] != true || got["reasoning_effort"] != "high" {
+		t.Errorf("passthrough changed thinking fields: %v", got)
+	}
+	if got["temperature"] != 0.2 {
+		t.Errorf("params should still be injected: %v", got)
+	}
+	envelope := decodeMap(t, data)
+	upstreamHeaders := envelope["headers"].(map[string]any)
+	if _, present := upstreamHeaders["X-Workbench-Thinking"]; present {
+		t.Error("control header was forwarded upstream")
+	}
+}
+
+func TestWorkbenchThinkingHeaderOn(t *testing.T) {
+	up := newUpstream(t, echoHandler(t))
+	p := newProxy(t, up, nil)
+
+	headers := map[string]string{
+		"Content-Type":         "application/json",
+		"X-Workbench-Thinking": "on",
+	}
+	_, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions",
+		`{"model":"m","think":true,"reasoning_effort":"high"}`, headers)
+	got := forwardedBody(t, data)
+	if got["reasoning_effort"] != "high" {
+		t.Errorf("reasoning_effort = %v", got["reasoning_effort"])
+	}
+	if _, present := got["think"]; present {
+		t.Error("think should be removed on /v1 even when thinking is on")
+	}
+}
+
+func TestWorkbenchProfileHeader(t *testing.T) {
+	up := newUpstream(t, echoHandler(t))
+	base, _ := url.Parse(up.URL)
+	settings := profileSettings{
+		upstream: base,
+		timeout:  5 * time.Second,
+		params:   defaultParams(),
+		profiles: map[string]policy.Policy{
+			"raw": {Thinking: policy.ThinkingPassthrough, Params: map[string]json.RawMessage{}},
+		},
+	}
+	p := newProxy(t, up, func(o *Options) { o.Settings = settings })
+
+	headers := map[string]string{
+		"Content-Type":        "application/json",
+		"X-Workbench-Profile": "raw",
+	}
+	_, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions",
+		`{"model":"m","think":true,"reasoning_effort":"high","temperature":1}`, headers)
+	got := forwardedBody(t, data)
+	if got["think"] != true || got["reasoning_effort"] != "high" || got["temperature"] != float64(1) {
+		t.Errorf("raw profile changed the body: %v", got)
+	}
+	if _, present := got["max_tokens"]; present {
+		t.Error("raw profile injected params")
+	}
+	if envelope := decodeMap(t, data); envelope["headers"].(map[string]any)["X-Workbench-Profile"] != nil {
+		t.Error("profile header was forwarded upstream")
+	}
+}
+
+func TestUnknownProfileIsRejected(t *testing.T) {
+	called := false
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, "{}")
+	})
+	p := newProxy(t, up, nil)
+	headers := map[string]string{
+		"Content-Type":        "application/json",
+		"X-Workbench-Profile": "missing",
+	}
+	resp, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions", `{"model":"m"}`, headers)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d: %s", resp.StatusCode, data)
+	}
+	if called {
+		t.Error("unknown profile reached the upstream")
+	}
+}
+
+func TestInvalidThinkingHeaderIsRejected(t *testing.T) {
+	up := newUpstream(t, echoHandler(t))
+	p := newProxy(t, up, nil)
+	headers := map[string]string{
+		"Content-Type":         "application/json",
+		"X-Workbench-Thinking": "maybe",
+	}
+	resp, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions", `{"model":"m"}`, headers)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d: %s", resp.StatusCode, data)
+	}
+}
+
+type captureRecorder struct {
+	ch chan inspect.Capture
+}
+
+func newCaptureRecorder() *captureRecorder {
+	return &captureRecorder{ch: make(chan inspect.Capture, 4)}
+}
+
+func (r *captureRecorder) Record(capture inspect.Capture) { r.ch <- capture }
+
+func (r *captureRecorder) wait(t *testing.T) inspect.Capture {
+	t.Helper()
+	select {
+	case capture := <-r.ch:
+		return capture
+	case <-time.After(2 * time.Second):
+		t.Fatal("capture did not arrive")
+		return inspect.Capture{}
+	}
+}
+
+func TestCaptureNonStream(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+	recorder := newCaptureRecorder()
+	p := newProxy(t, up, func(o *Options) { o.CaptureRecorder = recorder })
+
+	_, _ = post(t, p.URL+"/v1/chat/completions", `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	capture := recorder.wait(t)
+	if capture.ID == "" || capture.Method != "POST" || capture.Path != "/v1/chat/completions" {
+		t.Errorf("capture = %+v", capture)
+	}
+	if capture.Source != "proxy" || capture.Provider != "ollama" {
+		t.Errorf("source/provider = %q/%q", capture.Source, capture.Provider)
+	}
+	if !strings.Contains(string(capture.RequestOriginal), `"model":"m"`) {
+		t.Errorf("original = %s", capture.RequestOriginal)
+	}
+	if !strings.Contains(string(capture.RequestForwarded), `"reasoning_effort":"none"`) {
+		t.Errorf("forwarded = %s", capture.RequestForwarded)
+	}
+	if capture.Status != 200 || !strings.Contains(string(capture.ResponseBody), `"ok":true`) {
+		t.Errorf("status/body = %d / %s", capture.Status, capture.ResponseBody)
+	}
+	if capture.Duration <= 0 || capture.TTFT <= 0 {
+		t.Errorf("timings = %v/%v", capture.Duration, capture.TTFT)
+	}
+	if capture.Stream {
+		t.Error("non-stream response marked as stream")
+	}
+}
+
+func TestCaptureStream(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for _, chunk := range []string{"data: {\"a\":1}\n\n", "data: [DONE]\n\n"} {
+			_, _ = io.WriteString(w, chunk)
+			flusher.Flush()
+		}
+	})
+	recorder := newCaptureRecorder()
+	p := newProxy(t, up, func(o *Options) { o.CaptureRecorder = recorder })
+
+	_, _ = post(t, p.URL+"/v1/chat/completions", `{"model":"m"}`)
+	capture := recorder.wait(t)
+	if !capture.Stream {
+		t.Error("stream response not marked")
+	}
+	if !strings.Contains(string(capture.ResponseBody), "[DONE]") {
+		t.Errorf("stream body = %q", capture.ResponseBody)
+	}
+}
+
+func TestCaptureSkipsNonChatAndTruncates(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, strings.Repeat("x", 100))
+	})
+	recorder := newCaptureRecorder()
+	p := newProxy(t, up, func(o *Options) {
+		o.CaptureRecorder = recorder
+		o.CaptureBodyLimit = 10
+	})
+
+	_, _ = do(t, http.MethodGet, p.URL+"/api/tags", "", nil)
+	select {
+	case capture := <-recorder.ch:
+		t.Fatalf("non-chat request was captured: %+v", capture)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	_, _ = post(t, p.URL+"/v1/chat/completions", `{"model":"m"}`)
+	capture := recorder.wait(t)
+	if !capture.ResponseTruncated {
+		t.Error("response truncation flag missing")
+	}
+	if len(capture.ResponseBody) != 10 {
+		t.Errorf("body length = %d", len(capture.ResponseBody))
 	}
 }

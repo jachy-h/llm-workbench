@@ -17,10 +17,11 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/jachy-h/ollama-nothink-proxy/internal/autostart"
-	"github.com/jachy-h/ollama-nothink-proxy/internal/config"
-	"github.com/jachy-h/ollama-nothink-proxy/internal/i18n"
-	"github.com/jachy-h/ollama-nothink-proxy/internal/logstore"
+	"github.com/jachy-h/llm-workbench/internal/autostart"
+	"github.com/jachy-h/llm-workbench/internal/config"
+	"github.com/jachy-h/llm-workbench/internal/i18n"
+	"github.com/jachy-h/llm-workbench/internal/logstore"
+	"github.com/jachy-h/llm-workbench/internal/netutil"
 )
 
 const (
@@ -32,7 +33,7 @@ const (
 	PollMS = 1000
 	// langPlaceholder marks where the page wants the current language tag, so
 	// the first paint is already in the right language.
-	langPlaceholder = "__ONP_LANG__"
+	langPlaceholder = "__LLM_WORKBENCH_LANG__"
 )
 
 //go:embed portal.html
@@ -84,7 +85,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) bool {
 	if path != Prefix && !strings.HasPrefix(path, Prefix+"/") {
 		return false
 	}
-	if !isLoopback(r.RemoteAddr) {
+	if !netutil.Guard(r) {
 		writeJSONError(w, http.StatusForbidden, i18n.T("portal.errLoopback"))
 		return true
 	}

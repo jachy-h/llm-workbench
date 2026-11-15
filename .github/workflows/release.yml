@@ -32,6 +32,22 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/setup-node@v4
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Verify embedded web build
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          cd web
+          npm ci --no-audit --no-fund
+          npm run build
+          cd ..
+          git diff --exit-code web/dist
+
       - name: Test
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: go test ./... -timeout 300s
@@ -44,12 +60,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          name="ollama-nothink-proxy_${version}_${GOOS}_${GOARCH}"
+          name="llm-workbench_${version}_${GOOS}_${GOARCH}"
           mkdir -p "dist/$name"
-          bin="dist/$name/ollama-nothink-proxy"
+          bin="dist/$name/llm-workbench"
           if [ "$GOOS" = "windows" ]; then bin="$bin.exe"; fi
           go build -trimpath -ldflags="-s -w" \
-            -o "$bin" ./cmd/ollama-nothink-proxy
+            -o "$bin" ./cmd/llm-workbench
           cp README.md README.en.md "dist/$name/"
           cd dist
           if [ "$GOOS" = "windows" ]; then
