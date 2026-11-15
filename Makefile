@@ -37,7 +37,7 @@ dist: web clean-dist
 		echo "building $$name"; \
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch \
 			go build -trimpath -ldflags="$(LDFLAGS)" -o "$$dir/$(BINARY)$$ext" ./cmd/llm-workbench; \
-		cp README.md README.en.md "$$dir/"; \
+		cp README.md README.zh.md "$$dir/"; \
 		if [ "$$goos" = "windows" ]; then \
 			(cd $(DIST) && zip -qr "$$name.zip" "$$name"); \
 		else \

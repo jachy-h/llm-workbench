@@ -66,7 +66,7 @@ jobs:
           if [ "$GOOS" = "windows" ]; then bin="$bin.exe"; fi
           go build -trimpath -ldflags="-s -w" \
             -o "$bin" ./cmd/llm-workbench
-          cp README.md README.en.md "dist/$name/"
+          cp README.md README.zh.md "dist/$name/"
           cd dist
           if [ "$GOOS" = "windows" ]; then
             zip -qr "$name.zip" "$name"
