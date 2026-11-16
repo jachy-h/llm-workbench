@@ -22,7 +22,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -820,10 +819,16 @@ func parseArgs(args []string, getenv func(string) (string, bool)) (*Config, erro
 	}
 
 	// Only the default config path migrates: an explicit --config is taken
-	// exactly as given.
+	// exactly as given. The same applies to the log and the database.
 	defaultConfig := configPath == ""
+	defaultDB := dbPath == ""
 	configPath = expandPath(configPathOr(configPath))
 	logPath = expandPath(logPathOr(logPath))
+	if dir := filepath.Dir(logPath); dir != "" {
+		// The log file lives in a subdirectory now; launchd redirects stdout
+		// there before the process runs, so the directory has to exist first.
+		_ = os.MkdirAll(dir, 0o755)
+	}
 	migratedFrom := ""
 	if defaultConfig {
 		migratedFrom = migrateConfig(configPath)
@@ -916,6 +921,12 @@ func parseArgs(args []string, getenv func(string) (string, bool)) (*Config, erro
 	}
 	if stored.storageSet {
 		cfg.storage = stored.storage
+		if defaultDB {
+			// Older releases wrote their platform default into the file. Treat
+			// that value as "the default", not as a deliberate choice, so the
+			// database follows the app directory too.
+			cfg.storage.Path = translateLegacyDataPath(cfg.storage.Path)
+		}
 	}
 	if dbPath != "" {
 		cfg.storage.Path = expandPath(dbPath)
@@ -1277,40 +1288,77 @@ func expandPath(path string) string {
 	return abs
 }
 
-// ConfigDir is where the config file lives: ~/.config/llm-workbench on every
-// platform (XDG_CONFIG_HOME wins when it is set). One path for all systems
-// keeps the docs, the autostart plist and the user's habits identical.
-func ConfigDir() string {
-	if base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); base != "" {
-		return filepath.Join(expandPath(base), "llm-workbench")
+// AppDir is the one directory the app owns: ~/.llm-workbench. Config, logs
+// and the workbench database all live below it, on every platform. A single
+// predictable path is easy to back up, inspect and explain in the docs.
+func AppDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "~"
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "llm-workbench")
+	return filepath.Join(home, ".llm-workbench")
+}
+
+// ConfigDir is the app directory that holds the config file. It is kept as a
+// separate name because the portal and the docs talk about the config dir.
+func ConfigDir() string {
+	return AppDir()
 }
 
 // DefaultConfigPath is where the config file lives when --config is omitted.
 // The .jsonc suffix is the promise that comments and trailing commas are fine.
 func DefaultConfigPath() string {
-	return filepath.Join(ConfigDir(), "config.jsonc")
+	return filepath.Join(AppDir(), "config.jsonc")
+}
+
+// DefaultLogPath is where request logs live when --log is omitted.
+func DefaultLogPath() string {
+	return filepath.Join(AppDir(), "logs", "llm-workbench.log")
+}
+
+// DefaultDataPath is the SQLite database used by the workbench.
+func DefaultDataPath() string {
+	return filepath.Join(AppDir(), "workbench.db")
 }
 
 // ConfigBackupSuffix is appended to a legacy file once it has been migrated,
 // so the import runs once and the original stays recoverable.
 const ConfigBackupSuffix = ".bak"
 
+// legacyConfigDirs are the directories older releases read their config from,
+// newest first. XDG_CONFIG_HOME is consulted only to find a file from an older
+// release, never to choose where the app writes today.
+func legacyConfigDirs() []string {
+	home, _ := os.UserHomeDir()
+	dirs := make([]string, 0, 5)
+	if base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); base != "" {
+		dirs = append(dirs, filepath.Join(expandPath(base), "llm-workbench"))
+	}
+	dirs = append(dirs,
+		// The 0.6 default on every platform.
+		filepath.Join(home, ".config", "llm-workbench"),
+		// macOS used Application Support up to 0.5.
+		filepath.Join(home, "Library", "Application Support", "llm-workbench"),
+		// The project used to be called ollama-nothink-proxy.
+		filepath.Join(home, "Library", "Application Support", "ollama-nothink-proxy"),
+		filepath.Join(home, ".config", "ollama-nothink-proxy"),
+	)
+	return dedupePaths(dirs)
+}
+
 // LegacyConfigPaths lists the config files older releases used, in the order
 // they are tried. The first one that exists is imported into the new path.
 func LegacyConfigPaths() []string {
-	home, _ := os.UserHomeDir()
-	support := filepath.Join(home, "Library", "Application Support")
-	return []string{
-		// The pre-JSONC layout in the current directory.
-		filepath.Join(ConfigDir(), "config.json"),
-		// macOS used Application Support up to 0.6.
-		filepath.Join(support, "llm-workbench", "config.json"),
-		// The project used to be called ollama-nothink-proxy.
-		filepath.Join(support, "ollama-nothink-proxy", "config.json"),
+	paths := []string{}
+	// A pre-JSONC file that a very old build left in today's directory.
+	paths = append(paths, filepath.Join(AppDir(), "config.json"))
+	for _, dir := range legacyConfigDirs() {
+		paths = append(paths,
+			filepath.Join(dir, "config.jsonc"),
+			filepath.Join(dir, "config.json"),
+		)
 	}
+	return dedupePaths(paths)
 }
 
 // migrateConfig imports the first legacy config file into path and returns
@@ -1321,7 +1369,7 @@ func migrateConfig(path string) string {
 		return ""
 	}
 	for _, legacy := range LegacyConfigPaths() {
-		if filepath.Clean(legacy) == filepath.Clean(path) {
+		if samePath(legacy, path) {
 			continue
 		}
 		if info, err := os.Stat(legacy); err != nil || info.IsDir() {
@@ -1333,6 +1381,170 @@ func migrateConfig(path string) string {
 		return legacy
 	}
 	return ""
+}
+
+// LegacyLogPaths lists the log files older releases wrote. They are removed
+// when the default log path is used, because keeping stale copies around only
+// makes it unclear which file the running proxy writes.
+func LegacyLogPaths() []string {
+	home, _ := os.UserHomeDir()
+	state := strings.TrimSpace(os.Getenv("XDG_STATE_HOME"))
+	if state == "" {
+		state = filepath.Join(home, ".local", "state")
+	} else {
+		state = expandPath(state)
+	}
+	return dedupePaths([]string{
+		filepath.Join(home, "Library", "Logs", "llm-workbench.log"),
+		filepath.Join(home, "Library", "Logs", "ollama-nothink-proxy.log"),
+		filepath.Join(state, "llm-workbench", "llm-workbench.log"),
+	})
+}
+
+// RemoveLegacyLogs deletes the log files earlier releases left behind. Only
+// regular files are touched; a directory or a symlink with a matching name is
+// left alone. The caller runs it only when no older instance can still be
+// writing to those files.
+func RemoveLegacyLogs(current string) {
+	for _, legacy := range LegacyLogPaths() {
+		if samePath(legacy, current) {
+			continue
+		}
+		info, err := os.Lstat(legacy)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		_ = os.Remove(legacy)
+	}
+}
+
+// LegacyDataPaths lists the databases older releases used, newest first.
+func LegacyDataPaths() []string {
+	home, _ := os.UserHomeDir()
+	data := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
+	if data == "" {
+		data = filepath.Join(home, ".local", "share")
+	} else {
+		data = expandPath(data)
+	}
+	paths := []string{
+		filepath.Join(home, "Library", "Application Support", "llm-workbench", "workbench.db"),
+		filepath.Join(home, "Library", "Application Support", "ollama-nothink-proxy", "workbench.db"),
+		filepath.Join(data, "llm-workbench", "workbench.db"),
+		filepath.Join(data, "ollama-nothink-proxy", "workbench.db"),
+	}
+	if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
+		paths = append(paths, filepath.Join(local, "llm-workbench", "workbench.db"))
+	}
+	return dedupePaths(paths)
+}
+
+// translateLegacyDataPath maps a database path that equals an old platform
+// default back to the app directory. A path the user really chose is returned
+// unchanged.
+func translateLegacyDataPath(path string) string {
+	clean := filepath.Clean(expandPath(path))
+	for _, legacy := range LegacyDataPaths() {
+		if samePath(clean, legacy) {
+			return DefaultDataPath()
+		}
+	}
+	return path
+}
+
+// MigrateData moves the first legacy database into path and returns the source
+// it used, or "" when there was nothing to migrate. An existing database at
+// path always wins. The caller runs it only when no older instance can still
+// have the file open.
+func MigrateData(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return ""
+	}
+	for _, legacy := range LegacyDataPaths() {
+		if samePath(legacy, path) {
+			continue
+		}
+		info, err := os.Stat(legacy)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if err := moveDatabase(legacy, path); err != nil {
+			continue
+		}
+		return legacy
+	}
+	return ""
+}
+
+// moveDatabase moves the database together with SQLite's write-ahead log and
+// shared-memory files. Moving all three keeps uncommitted frames reachable.
+func moveDatabase(legacy, path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := moveFile(legacy, path); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(legacy + suffix); err == nil {
+			_ = moveFile(legacy+suffix, path+suffix)
+		}
+	}
+	return nil
+}
+
+// moveFile renames src to dst, falling back to a copy when the two paths are
+// on different volumes.
+func moveFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
+		return err
+	}
+	return os.Remove(src)
+}
+
+func samePath(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func dedupePaths(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		key := filepath.Clean(path)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, path)
+	}
+	return out
 }
 
 // migrateFile re-encodes the legacy document at path, correcting a listen
@@ -1387,38 +1599,6 @@ func upstreamFromDocument(document map[string]json.RawMessage) *url.URL {
 		return nil
 	}
 	return parsed
-}
-
-// DefaultLogPath is where request logs live when --log is omitted.
-func DefaultLogPath() string {
-	home, _ := os.UserHomeDir()
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Logs", "llm-workbench.log")
-	}
-	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
-		base = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(base, "llm-workbench", "llm-workbench.log")
-}
-
-// DefaultDataPath is the SQLite database used by the workbench.
-func DefaultDataPath() string {
-	home, _ := os.UserHomeDir()
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "llm-workbench", "workbench.db")
-	}
-	if runtime.GOOS == "windows" {
-		if base := os.Getenv("LOCALAPPDATA"); base != "" {
-			return filepath.Join(base, "llm-workbench", "workbench.db")
-		}
-		return filepath.Join(home, "AppData", "Local", "llm-workbench", "workbench.db")
-	}
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		base = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(base, "llm-workbench", "workbench.db")
 }
 
 // DefaultInspectorSettings enables metadata capture but not body capture.

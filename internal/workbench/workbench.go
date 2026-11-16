@@ -100,6 +100,17 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// ServeIndex serves the embedded React shell for routes outside Prefix. The
+// proxy settings page uses the same bundle, so /_/llm-proxy is also handled by
+// this app while its API stays in internal/portal.
+func (h *Handler) ServeIndex(w http.ResponseWriter, r *http.Request) {
+	if !netutil.Guard(r) {
+		writeJSONError(w, http.StatusForbidden, "workbench: loopback access only")
+		return
+	}
+	h.serveIndex(w, r)
+}
+
 func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeJSONError(w, http.StatusMethodNotAllowed, "workbench: method not allowed")

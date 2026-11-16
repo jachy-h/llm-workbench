@@ -35,6 +35,7 @@ func newFixture(t *testing.T) *fixture {
 	cfg, err := config.Parse([]string{
 		"--config", filepath.Join(dir, "config.json"),
 		"--log", filepath.Join(dir, "proxy.log"),
+		"--db", filepath.Join(dir, "workbench.db"),
 	}, func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
@@ -88,36 +89,23 @@ func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return out
 }
 
-func TestPageServed(t *testing.T) {
+func TestPIDEndpoint(t *testing.T) {
 	f := newFixture(t)
-	for _, path := range []string{"/_/llm-proxy", "/_/llm-proxy/"} {
-		rec := f.do(http.MethodGet, path, "")
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s status = %d", path, rec.Code)
-		}
-		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
-			t.Errorf("%s Content-Type = %q", path, ct)
-		}
-		page := rec.Body.String()
-		for _, needle := range []string{
-			"llm-workbench", "关闭服务", "恢复默认", "日志", "logPause", "setInterval",
-			"thinking", "systemText", "profiles", "maxConcurrent", "dbPath",
-		} {
-			if !strings.Contains(page, needle) {
-				t.Errorf("%s page missing %q", path, needle)
-			}
-		}
-		if strings.Contains(page, "还原为当前值") {
-			t.Error("page still has the old defaults button label")
-		}
+	rec := f.do(http.MethodGet, "/_/llm-proxy/api/pid", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
 	}
-}
-
-func TestHeadPageHasNoBody(t *testing.T) {
-	f := newFixture(t)
-	rec := f.do(http.MethodHead, "/_/llm-proxy", "")
-	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
-		t.Fatalf("HEAD status=%d body=%d bytes", rec.Code, rec.Body.Len())
+	var out struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.PID != 4242 {
+		t.Errorf("pid = %d, want 4242", out.PID)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
 }
 
@@ -402,29 +390,12 @@ func TestUnknownRouteIs404(t *testing.T) {
 	}
 }
 
-func TestPageIsEmbedded(t *testing.T) {
-	if len(pageHTML) < 10_000 {
-		t.Fatalf("embedded page is only %d bytes", len(pageHTML))
-	}
-	if !strings.HasPrefix(string(pageHTML), "<!doctype html>") {
-		t.Error("embedded page does not look like HTML")
-	}
-}
-
-// TestLanguageReachesPageAndState covers the server half of the switch: the
-// page is seeded through <html lang>, the state reports it, and saving it
-// through the config route changes both plus the runtime language.
-func TestLanguageReachesPageAndState(t *testing.T) {
+// TestLanguageReachesState covers the server half of the switch: the state
+// reports the language, and saving it changes both state and runtime language.
+func TestLanguageReachesState(t *testing.T) {
 	t.Cleanup(func() { i18n.Set(i18n.ZH) })
 	f := newFixture(t)
 
-	page := f.do(http.MethodGet, "/_/llm-proxy", "").Body.String()
-	if !strings.Contains(page, `<html lang="zh">`) {
-		t.Error("page was not seeded with lang=zh")
-	}
-	if strings.Contains(page, langPlaceholder) {
-		t.Error("page still contains the language placeholder")
-	}
 	if got := decodeJSON(t, f.do(http.MethodGet, "/_/llm-proxy/api/state", ""))["lang"]; got != "zh" {
 		t.Errorf("state lang = %v, want zh", got)
 	}
@@ -438,10 +409,6 @@ func TestLanguageReachesPageAndState(t *testing.T) {
 	}
 	if got := i18n.Current(); got != i18n.EN {
 		t.Errorf("runtime language = %q, want en", got)
-	}
-	page = f.do(http.MethodGet, "/_/llm-proxy", "").Body.String()
-	if !strings.Contains(page, `<html lang="en">`) {
-		t.Error("page did not switch to lang=en")
 	}
 
 	// A bad value is rejected and leaves the language alone.

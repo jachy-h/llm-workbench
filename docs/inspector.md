@@ -10,21 +10,21 @@ Inspector 把经过代理的 chat 请求写入本地 SQLite，并在 `/_/workben
 - 只捕获 `POST /v1/chat/completions`、`POST /api/chat`，以及 Playground / Experiments 的语义调用；其他代理路径完全透传，不产生记录。
 - 捕获异步写入，队列满时丢弃并计数，不阻塞代理。
 
-写入正文：在代理页面打开「保存请求/响应正文」。
+写入正文：在设置页面打开「记忆正文」。
 
-完全关闭：在代理页面关闭「记录请求历史」。
+完全关闭：在设置页面关闭「记录请求历史」。
 
 关闭后不再写入新记录，已有历史仍可通过 `/_/workbench` 查看；只有数据库本身无法打开时，历史接口才返回 503。
 
 ## 数据位置
 
 ```text
-macOS:   ~/Library/Application Support/llm-workbench/workbench.db
-Linux:   ~/.local/share/llm-workbench/workbench.db
-Windows: %LOCALAPPDATA%\llm-workbench\workbench.db
+macOS:   ~/.llm-workbench/workbench.db
+Linux:   ~/.llm-workbench/workbench.db
+Windows: %USERPROFILE%\.llm-workbench\workbench.db
 ```
 
-自定义：在代理页面填写数据库路径，或用 `--db` 作为启动项覆盖。
+自定义：在设置页面填写数据库路径，或用 `--db` 作为启动项覆盖。
 
 SQLite 使用 WAL、`synchronous=NORMAL`、5s busy timeout。写入串行化，避免并发写导致 `SQLITE_BUSY`。
 

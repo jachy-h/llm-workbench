@@ -48,9 +48,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/YOURNAME/Library/Logs/llm-workbench.log</string>
+    <string>/Users/YOURNAME/.llm-workbench/logs/llm-workbench.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/YOURNAME/Library/Logs/llm-workbench.log</string>
+    <string>/Users/YOURNAME/.llm-workbench/logs/llm-workbench.log</string>
 
     <!-- start the proxy after Ollama so the upstream is already listening -->
     <key>ThrottleInterval</key>

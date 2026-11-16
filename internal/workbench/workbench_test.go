@@ -72,6 +72,21 @@ func TestServesUI(t *testing.T) {
 	}
 }
 
+func TestServeIndexForPortalRoute(t *testing.T) {
+	handler, _ := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/_/llm-proxy", nil)
+	req.RemoteAddr = "127.0.0.1:5555"
+	req.Host = "127.0.0.1:11500"
+	rec := httptest.NewRecorder()
+	handler.ServeIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `<div id="root">`) {
+		t.Errorf("index page missing root: %s", rec.Body.String())
+	}
+}
+
 func TestHealthAndListAndDetail(t *testing.T) {
 	handler, _ := newTestHandler(t)
 	rec := call(handler, http.MethodGet, "/_/workbench/api/health", "")

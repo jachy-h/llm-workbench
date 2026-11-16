@@ -75,7 +75,7 @@ func TestPrettyPath(t *testing.T) {
 }
 
 func TestBannerIsPlainWhenNotATerminal(t *testing.T) {
-	cfg, err := config.Parse([]string{"--port", "11500", "--no-browser", "--config", filepath.Join(t.TempDir(), "config.json")}, func(string) (string, bool) { return "", false })
+	cfg, err := config.Parse([]string{"--port", "11500", "--no-browser", "--config", filepath.Join(t.TempDir(), "config.json"), "--db", filepath.Join(t.TempDir(), "workbench.db")}, func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestPaintDisabledByNoColor(t *testing.T) {
 func TestBannerInEnglish(t *testing.T) {
 	t.Cleanup(func() { i18n.Set(i18n.ZH) })
 
-	cfg, err := config.Parse([]string{"--port", "11500", "--no-browser", "--config", filepath.Join(t.TempDir(), "config.json")},
+	cfg, err := config.Parse([]string{"--port", "11500", "--no-browser", "--config", filepath.Join(t.TempDir(), "config.json"), "--db", filepath.Join(t.TempDir(), "workbench.db")},
 		func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -160,7 +160,7 @@ func TestBannerReflectsThinkingMode(t *testing.T) {
 	configPath := filepath.Join(dir, "config.jsonc")
 	logPath := filepath.Join(dir, "proxy.log")
 	for mode, needle := range cases {
-		cfg, err := config.Parse([]string{"--port", "11500", "--no-browser", "--config", configPath, "--log", logPath},
+		cfg, err := config.Parse([]string{"--port", "11500", "--no-browser", "--config", configPath, "--log", logPath, "--db", filepath.Join(dir, "workbench.db")},
 			func(string) (string, bool) { return "", false })
 		if err != nil {
 			t.Fatalf("parse %s: %v", mode, err)

@@ -170,6 +170,7 @@ var catalog = map[string]Message{
 	"cli.errStart":       {ZH: "启动失败: %v", EN: "start failed: %v"},
 	"cli.hintAddrInUse":  {ZH: "  %s 可能已被占用", EN: "  %s may already be in use"},
 	"cli.configMigrated": {ZH: "已迁移旧配置: %s → %s（原文件保留为 *.bak）", EN: "migrated the legacy config: %s → %s (the original is kept as *.bak)"},
+	"cli.dataMigrated":   {ZH: "已迁移旧数据库: %s → %s", EN: "migrated the legacy database: %s → %s"},
 	"cli.portAdjusted":   {ZH: "端口 %d 不能用（11434 被 Ollama 占用，代理也不能和 upstream 用同一个端口），已改用 %d", EN: "port %d cannot be used (11434 belongs to Ollama, and the proxy cannot share the upstream's port); using %d instead"},
 	"cli.errServe":       {ZH: "服务异常退出: %v", EN: "server exited unexpectedly: %v"},
 	"cli.warnHistory":    {ZH: "请求历史不可用: %v（代理继续运行）", EN: "request history unavailable: %v (proxy continues)"},

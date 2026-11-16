@@ -42,9 +42,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/YOURNAME/Library/Logs/llm-workbench.log</string>
+    <string>/Users/YOURNAME/.llm-workbench/logs/llm-workbench.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/YOURNAME/Library/Logs/llm-workbench.log</string>
+    <string>/Users/YOURNAME/.llm-workbench/logs/llm-workbench.log</string>
 
     <!-- Ollama 先起来再起代理, 免得上游还没监听 -->
     <key>ThrottleInterval</key>

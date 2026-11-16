@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"syscall"
@@ -79,6 +80,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if code != 0 {
 			return code
 		}
+		// The old instance is gone now, so it is safe to move a database it
+		// may have been using.
+		migrateLegacyFiles(cfg, portalURL, stdout)
 		if note == "" {
 			// launchd restarted the job itself and the banner is already out.
 			return 0
@@ -88,10 +92,32 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return runForeground(cfg, portalURL, note, stdout, stderr)
 	}
+	migrateLegacyFiles(cfg, portalURL, stdout)
 	if !cfg.Foreground {
 		return runBackground(rest, cfg, portalURL, "", stdout, stderr)
 	}
 	return runForeground(cfg, portalURL, "", stdout, stderr)
+}
+
+// migrateLegacyFiles moves the old platform database into ~/.llm-workbench and
+// removes logs older releases wrote. It does nothing while another instance is
+// still answering, because that instance may have those files open.
+func migrateLegacyFiles(cfg *config.Config, portalURL string, stdout io.Writer) {
+	if _, running := daemon.Inspect(portalURL, time.Second); running {
+		return
+	}
+	if filepath.Clean(cfg.LogPath) == filepath.Clean(config.DefaultLogPath()) {
+		config.RemoveLegacyLogs(cfg.LogPath)
+	}
+	path := cfg.Storage().Path
+	if filepath.Clean(path) != filepath.Clean(config.DefaultDataPath()) {
+		return
+	}
+	from := config.MigrateData(path)
+	if from == "" {
+		return
+	}
+	fmt.Fprintf(stdout, i18n.T("cli.dataMigrated")+"\n", prettyPath(from), prettyPath(path))
 }
 
 // stopInstance shuts down whatever answers on the portal URL. Stopping when
@@ -356,6 +382,12 @@ func runForeground(cfg *config.Config, portalURL, note string, stdout, stderr io
 		Runner:    experimentRunner,
 	})
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The proxy settings page and the workbench share one React bundle.
+		// The portal package now only owns the API behind this URL.
+		if r.URL.Path == portal.Prefix || r.URL.Path == portal.Prefix+"/" {
+			workbenchHandler.ServeIndex(w, r)
+			return
+		}
 		if portalHandler.Handle(w, r) {
 			return
 		}

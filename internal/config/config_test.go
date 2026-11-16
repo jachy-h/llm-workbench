@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func envOf(pairs map[string]string) func(string) (string, bool) {
 func tempPaths(t *testing.T) []string {
 	t.Helper()
 	dir := t.TempDir()
-	return []string{"--config", filepath.Join(dir, "config.json"), "--log", filepath.Join(dir, "proxy.log")}
+	return []string{"--config", filepath.Join(dir, "config.json"), "--log", filepath.Join(dir, "proxy.log"), "--db", filepath.Join(dir, "workbench.db")}
 }
 
 func parse(t *testing.T, args []string, env map[string]string) *Config {
@@ -219,18 +220,32 @@ func TestDefaultPaths(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
 
-	wantConfig := filepath.Join(home, ".config", "llm-workbench", "config.jsonc")
+	appDir := filepath.Join(home, ".llm-workbench")
+	wantConfig := filepath.Join(appDir, "config.jsonc")
+	wantLog := filepath.Join(appDir, "logs", "llm-workbench.log")
+	wantData := filepath.Join(appDir, "workbench.db")
 	if got := DefaultConfigPath(); got != wantConfig {
 		t.Errorf("DefaultConfigPath() = %q, want %q", got, wantConfig)
 	}
-	if got := ConfigDir(); got != filepath.Dir(wantConfig) {
-		t.Errorf("ConfigDir() = %q", got)
+	if got := ConfigDir(); got != appDir {
+		t.Errorf("ConfigDir() = %q, want %q", got, appDir)
+	}
+	if got := DefaultLogPath(); got != wantLog {
+		t.Errorf("DefaultLogPath() = %q, want %q", got, wantLog)
+	}
+	if got := DefaultDataPath(); got != wantData {
+		t.Errorf("DefaultDataPath() = %q, want %q", got, wantData)
 	}
 
-	cfg := parse(t, []string{"--log", filepath.Join(home, "proxy.log")}, nil)
+	cfg := parse(t, []string{"--db", filepath.Join(home, "proxy.db")}, nil)
 	if cfg.ConfigPath != wantConfig {
 		t.Errorf("ConfigPath = %q, want %q", cfg.ConfigPath, wantConfig)
+	}
+	if cfg.LogPath != wantLog {
+		t.Errorf("LogPath = %q, want %q", cfg.LogPath, wantLog)
 	}
 	if cfg.Port != 11500 {
 		t.Errorf("Port = %d, want 11500", cfg.Port)
@@ -240,12 +255,21 @@ func TestDefaultPaths(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigPathHonoursXDG(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	want := filepath.Join(dir, "llm-workbench", "config.jsonc")
-	if got := DefaultConfigPath(); got != want {
-		t.Errorf("DefaultConfigPath() = %q, want %q", got, want)
+func TestDefaultPathsIgnoreXDG(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	appDir := filepath.Join(home, ".llm-workbench")
+	if got := DefaultConfigPath(); got != filepath.Join(appDir, "config.jsonc") {
+		t.Errorf("DefaultConfigPath() = %q", got)
+	}
+	if got := DefaultLogPath(); got != filepath.Join(appDir, "logs", "llm-workbench.log") {
+		t.Errorf("DefaultLogPath() = %q", got)
+	}
+	if got := DefaultDataPath(); got != filepath.Join(appDir, "workbench.db") {
+		t.Errorf("DefaultDataPath() = %q", got)
 	}
 }
 
@@ -322,9 +346,144 @@ func TestMigratesLegacyConfig(t *testing.T) {
 	}
 
 	// A second start finds the new file and imports nothing.
-	again := parse(t, []string{"--log", filepath.Join(home, "proxy.log")}, nil)
+	again := parse(t, []string{"--log", filepath.Join(home, "proxy.log"), "--db", filepath.Join(home, "proxy.db")}, nil)
 	if again.MigratedFrom != "" {
 		t.Errorf("second start migrated again from %q", again.MigratedFrom)
+	}
+}
+
+func TestMigratesLegacyJSONCConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	legacy := filepath.Join(home, ".config", "llm-workbench", "config.jsonc")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("{\n  // old default\n  \"thinking\": \"on\",\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := parse(t, []string{"--log", filepath.Join(home, "proxy.log"), "--db", filepath.Join(home, "proxy.db")}, nil)
+	if cfg.MigratedFrom != legacy {
+		t.Errorf("MigratedFrom = %q, want %q", cfg.MigratedFrom, legacy)
+	}
+	if cfg.ConfigPath != filepath.Join(home, ".llm-workbench", "config.jsonc") {
+		t.Errorf("ConfigPath = %q", cfg.ConfigPath)
+	}
+	if cfg.Thinking() != policy.ThinkingOn {
+		t.Errorf("Thinking = %q, want on", cfg.Thinking())
+	}
+	if _, err := os.Stat(legacy + ConfigBackupSuffix); err != nil {
+		t.Errorf("legacy file not kept as backup: %v", err)
+	}
+}
+
+func TestLegacyLogsAreRemoved(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+
+	old := []string{
+		filepath.Join(home, "Library", "Logs", "llm-workbench.log"),
+		filepath.Join(home, ".local", "state", "llm-workbench", "llm-workbench.log"),
+	}
+	for _, path := range old {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("old log\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := parse(t, []string{"--db", filepath.Join(home, "proxy.db")}, nil)
+	if cfg.LogPath != filepath.Join(home, ".llm-workbench", "logs", "llm-workbench.log") {
+		t.Errorf("LogPath = %q", cfg.LogPath)
+	}
+	// Parsing is side-effect free for logs; main removes them once it knows
+	// no older instance is still writing.
+	for _, path := range old {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("Parse removed legacy log %q too early: %v", path, err)
+		}
+	}
+	RemoveLegacyLogs(cfg.LogPath)
+	for _, path := range old {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("legacy log %q still exists (err %v)", path, err)
+		}
+	}
+}
+
+func TestRemoveLegacyLogsKeepsCurrentFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+
+	current := DefaultLogPath()
+	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(current, []byte("new log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	RemoveLegacyLogs(current)
+	if _, err := os.Stat(current); err != nil {
+		t.Errorf("current log was removed: %v", err)
+	}
+}
+
+func TestMigratesLegacyDatabaseAndRewritesDefaultPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+
+	legacy := filepath.Join(home, "Library", "Application Support", "llm-workbench", "workbench.db")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("sqlite bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Older releases wrote their platform default into the config file.
+	current := DefaultConfigPath()
+	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	document := `{"storage": {"path": ` + strconv.Quote(legacy) + `}}`
+	if err := os.WriteFile(current, []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := parse(t, []string{"--log", filepath.Join(home, "proxy.log")}, nil)
+	want := filepath.Join(home, ".llm-workbench", "workbench.db")
+	if cfg.Storage().Path != want {
+		t.Errorf("Storage.Path = %q, want %q", cfg.Storage().Path, want)
+	}
+	// Parsing does not move the file: another instance may still use it.
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("Parse removed the legacy database too early: %v", err)
+	}
+	if from := MigrateData(want); from != legacy {
+		t.Errorf("MigrateData = %q, want %q", from, legacy)
+	}
+	data, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("migrated database missing: %v", err)
+	}
+	if string(data) != "sqlite bytes" {
+		t.Errorf("migrated database = %q", data)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("legacy database still exists (err %v)", err)
+	}
+	// A second migration leaves the existing database alone.
+	if from := MigrateData(want); from != "" {
+		t.Errorf("second MigrateData moved %q", from)
 	}
 }
 
@@ -341,11 +500,14 @@ func TestExistingConfigWinsOverLegacy(t *testing.T) {
 	if err := os.WriteFile(current, []byte(`{"lang": "en"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(legacy, []byte(`{"lang": "zh"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg := parse(t, []string{"--log", filepath.Join(home, "proxy.log")}, nil)
+	cfg := parse(t, []string{"--log", filepath.Join(home, "proxy.log"), "--db", filepath.Join(home, "proxy.db")}, nil)
 	if cfg.MigratedFrom != "" {
 		t.Errorf("migrated over an existing config from %q", cfg.MigratedFrom)
 	}
@@ -658,7 +820,7 @@ func TestInvalidPolicyConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			// A malformed optional section is ignored on load; it must not crash.
-			cfg, err := Parse([]string{"--config", path, "--log", filepath.Join(dir, "p.log")}, envOf(nil))
+			cfg, err := Parse([]string{"--config", path, "--log", filepath.Join(dir, "p.log"), "--db", filepath.Join(dir, "workbench.db")}, envOf(nil))
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
 			}

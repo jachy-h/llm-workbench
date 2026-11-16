@@ -131,10 +131,11 @@ X-Workbench-Thinking: off | on | passthrough
 路径：
 
 ```text
-所有系统:  ~/.config/llm-workbench/config.jsonc   （设置了 XDG_CONFIG_HOME 时优先用它）
+所有系统:  ~/.llm-workbench/config.jsonc
+日志:      ~/.llm-workbench/logs/llm-workbench.log
 ```
 
-文件是 JSONC：允许 `//`、`/* */` 注释和尾逗号，保存时写回纯 JSON。旧版本的 `~/Library/Application Support/llm-workbench/config.json`、`~/.config/llm-workbench/config.json` 以及改名前的 `ollama-nothink-proxy/config.json` 会在第一次启动时自动导入，原文件保留为 `*.bak`。
+文件是 JSONC：允许 `//`、`/* */` 注释和尾逗号，保存时写回纯 JSON。旧版本的 `~/.config/llm-workbench/config.jsonc`、`~/Library/Application Support/llm-workbench/config.json`、`~/.config/llm-workbench/config.json` 以及改名前的 `ollama-nothink-proxy/config.json` 会在第一次启动时自动导入，原文件保留为 `*.bak`。旧位置的数据库会移动到 `~/.llm-workbench/workbench.db`，旧日志文件会被删除。
 
 监听端口默认 11500，且永远不会是 11434（Ollama 占用它）：配置里存了 11434 或与 upstream 相同的端口时，会改成 11500 并写回；显式 `--port 11434` 同样会被纠正并提示。
 
@@ -152,7 +153,7 @@ X-Workbench-Thinking: off | on | passthrough
   "profiles": {},
   "profile": "",
   "inspector": {"enabled": true, "capture_bodies": false, "max_body_bytes": 262144, "retention_days": 14, "max_rows": 5000},
-  "storage": {"path": "~/Library/Application Support/llm-workbench/workbench.db"},
+  "storage": {"path": "~/.llm-workbench/workbench.db"},
   "max_concurrent": 8,
   "max_body_size": 1048576,
   "lang": "zh"

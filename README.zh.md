@@ -73,11 +73,12 @@ http://127.0.0.1:11500/api/chat
 
 - 上游地址、超时、注入参数、并发与请求体上限；
 - thinking、System Prompt、Profile；
-- 请求历史（开关、正文、正文上限、保留天数、条数、数据库路径）；
 - 语言、macOS 登录自启；
 - 最近 100 条请求日志。
 
-除启动项（`--host`、`--port`、`--config`、`--log`、`--db`）外，全部配置都在代理页面上完成。顶部导航与请求、试验场、实验同级；中英文切换由所有页面共用，并保存在浏览器里。
+请求历史的开关、正文、保留策略与数据库路径在顶部导航的「设置」页面。
+
+除启动项（`--host`、`--port`、`--config`、`--log`、`--db`）外，全部配置都在界面里完成：代理行为在代理页面，请求历史、隐私与存储在设置页面。顶部导航与请求、试验场、实验同级；中英文切换由所有页面共用，并保存在浏览器里。
 
 ## Inspector（请求历史）
 
@@ -93,19 +94,19 @@ http://127.0.0.1:11500/api/chat
 隐私默认值：
 
 - 透明代理**只记录元数据**，不落盘请求/响应正文；
-- 在代理页面打开「保存请求/响应正文」即可检查正文；
+- 在设置页面打开「记忆正文」即可检查正文；
 - Playground / Experiments 自己发起的调用（Phase 2b+）默认记录正文；
 - 敏感 JSON 键（`api_key`、`authorization`、`token`、`password`、`secret` 等）在落库前脱敏；
 - 不记录 Authorization / Cookie 等请求头。
 
-历史设置的开关、正文捕获、正文上限、保留天数、条数和数据库路径都在代理页面；改动后重启生效。`--db` 仍可作为启动项覆盖数据库路径。
+历史设置的开关、正文捕获、正文上限、保留天数、条数和数据库路径都在设置页面；改动后重启生效。`--db` 仍可作为启动项覆盖数据库路径。
 
 数据库默认路径：
 
 ```text
-macOS:   ~/Library/Application Support/llm-workbench/workbench.db
-Linux:   ~/.local/share/llm-workbench/workbench.db
-Windows: %LOCALAPPDATA%\llm-workbench\workbench.db
+macOS:   ~/.llm-workbench/workbench.db
+Linux:   ~/.llm-workbench/workbench.db
+Windows: %USERPROFILE%\.llm-workbench\workbench.db
 ```
 
 ## Playground
@@ -123,7 +124,7 @@ Windows: %LOCALAPPDATA%\llm-workbench\workbench.db
 - 一键跳到 Inspector 查看本次请求；
 - 保存 / 更新 / 删除 / 加载 Prompt（SQLite）。
 
-Playground 的每次调用都会写入 Inspector（`source=playground`），并且**默认记录正文**，即使透明代理关闭了正文捕获。在代理页面关闭历史记录即可禁用。
+Playground 的每次调用都会写入 Inspector（`source=playground`），并且**默认记录正文**，即使透明代理关闭了正文捕获。在设置页面关闭历史记录即可禁用。
 
 ## Experiments
 
@@ -232,7 +233,7 @@ X-Workbench-Thinking: off | on | passthrough
     "retention_days": 14,
     "max_rows": 5000
   },
-  "storage": {"path": "/Users/you/Library/Application Support/llm-workbench/workbench.db"},
+  "storage": {"path": "/Users/you/.llm-workbench/workbench.db"},
   "max_concurrent": 8,
   "max_body_size": 1048576,
   "lang": "zh"
@@ -242,10 +243,11 @@ X-Workbench-Thinking: off | on | passthrough
 配置文件路径：
 
 ```text
-所有系统:  ~/.config/llm-workbench/config.jsonc   （设置了 XDG_CONFIG_HOME 时优先用它）
+所有系统:  ~/.llm-workbench/config.jsonc
+日志:      ~/.llm-workbench/logs/llm-workbench.log
 ```
 
-文件是 JSONC：允许 `//`、`/* */` 注释和尾逗号，保存时写回纯 JSON。旧版本把它放在 `~/Library/Application Support/llm-workbench/config.json`（macOS）或 `~/.config/llm-workbench/config.json`，改名之前还在 `ollama-nothink-proxy` 目录下；升级后第一次启动会自动导入找到的第一个，顺手修掉不能用的监听端口，原文件保留为 `config.json.bak`。
+文件是 JSONC：允许 `//`、`/* */` 注释和尾逗号，保存时写回纯 JSON。旧版本把它放在 `~/.config/llm-workbench/config.jsonc`、`~/Library/Application Support/llm-workbench/config.json`（macOS）或 `~/.config/llm-workbench/config.json`，改名之前还在 `ollama-nothink-proxy` 目录下；升级后第一次启动会自动导入找到的第一个，顺手修掉不能用的监听端口，把旧数据库移到 `~/.llm-workbench`，并保留配置原文件为 `config.json.bak`。旧日志文件会被删除。
 
 监听端口必须是代理自己能占住的，所以永远不会是 11434：配置里的 `"port": 11434`（或与 upstream 相同的端口）会被改成 11500 并写回一次；显式 `--port 11434` 同样会被纠正，并在启动时提示。
 
@@ -268,9 +270,9 @@ llm-workbench [<command>] [<options>]
 | `--host` | `host` | `127.0.0.1` |
 | `--port` | `port` | `11500` |
 | `--set KEY=VALUE`（可重复） | `params` | 见上 |
-| `--config` | — | 平台默认路径 |
-| `--log` | — | 平台默认路径 |
-| `--db` | `storage.path` | 平台默认路径 |
+| `--config` | — | `~/.llm-workbench/config.jsonc` |
+| `--log` | — | `~/.llm-workbench/logs/llm-workbench.log` |
+| `--db` | `storage.path` | `~/.llm-workbench/workbench.db` |
 | `-v`、`--version` | — | — |
 
 其余全部在代理页面配置。没有任何环境变量设置。
@@ -292,7 +294,8 @@ Playground/Experiments（Phase 2+）──► engine ──► provider/ollama �
 - `internal/engine`：语义调用编排、请求 ID、TTFT；
 - `internal/inspector`：捕获、脱敏、TTFT、异步写入；
 - `internal/storage`：SQLite 迁移、查询、保留策略；
-- `internal/workbench`：`/_/workbench` API、Playground / Experiments 与 React UI；
+- `internal/workbench`：`/_/workbench` API、Playground / Experiments 与其共享的 React UI（代理页也由它提供）；
+- `internal/portal`：`/_/llm-proxy` 的配置、日志、自启、关机 API；
 - `internal/experiments`：variant × case 批量执行、取消、评分；
 - `internal/proxy`：兼容平面，只做明确配置的改写。
 

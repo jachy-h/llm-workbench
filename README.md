@@ -65,9 +65,9 @@ Defaults: listen on `127.0.0.1:11500`, upstream `http://127.0.0.1:11434`. The li
 
 ## Proxy
 
-The proxy page is at <http://127.0.0.1:11500/_/llm-proxy> (loopback only): upstream, timeout, injected params, concurrency and body limits, thinking, system prompts, profiles, request-history settings, database path, language, macOS autostart and the last 100 request log lines. The top bar links to Requests, Playground and Experiments; the language toggle is shared by all pages and remembered in the browser.
+The proxy page is at <http://127.0.0.1:11500/_/llm-proxy> (loopback only): upstream, timeout, injected params, concurrency and body limits, thinking, system prompts, profiles, language, macOS autostart and the last 100 request log lines. The top bar links to Requests, Playground, Experiments and Settings; the language toggle is shared by all pages and remembered in the browser.
 
-Everything except the bootstrap paths (`--host`, `--port`, `--config`, `--log`, `--db`) is configured on this page.
+Everything except the bootstrap paths (`--host`, `--port`, `--config`, `--log`, `--db`) is configured in the UI: proxy behavior on the proxy page, request history, privacy and storage on the Settings page.
 
 ## Inspector (request history)
 
@@ -83,17 +83,15 @@ Open <http://127.0.0.1:11500/_/workbench/>:
 Privacy defaults:
 
 - the transparent proxy records **metadata only**; request/response bodies are not persisted;
-- turn on **Persist request/response bodies** on the proxy page to inspect bodies;
+- turn on **Remember bodies** on the Settings page to inspect bodies;
 - Playground / Experiments calls (Phase 2b+) record bodies by default;
 - sensitive JSON keys (`api_key`, `authorization`, `token`, `password`, `secret`, ...) are redacted before storage;
 - Authorization / Cookie headers are never stored.
 
-History settings (enabled, body capture, body size, retention days, max rows and the database path) are on the proxy page; they take effect after a restart. `--db` is still available as a bootstrap override.
+History settings (enabled, body capture, body size, retention days, max rows and the database path) are on the Settings page; they take effect after a restart. `--db` is still available as a bootstrap override.
 
 ```text
-macOS:   ~/Library/Application Support/llm-workbench/workbench.db
-Linux:   ~/.local/share/llm-workbench/workbench.db
-Windows: %LOCALAPPDATA%\llm-workbench\workbench.db
+all platforms: ~/.llm-workbench/workbench.db
 ```
 
 ## Playground
@@ -111,7 +109,7 @@ Switch to **Playground** in the top bar, or open <http://127.0.0.1:11500/_/workb
 - jump to Inspector for the same request;
 - save / update / delete / load prompts (SQLite).
 
-Every playground call is recorded in Inspector (`source=playground`) and records its bodies by default, even when the transparent proxy has body capture off. Turning history off on the proxy page disables it.
+Every playground call is recorded in Inspector (`source=playground`) and records its bodies by default, even when the transparent proxy has body capture off. Turning history off on the Settings page disables it.
 
 ## Experiments
 
@@ -220,7 +218,7 @@ Config example:
     "retention_days": 14,
     "max_rows": 5000
   },
-  "storage": {"path": "/Users/you/Library/Application Support/llm-workbench/workbench.db"},
+  "storage": {"path": "/Users/you/.llm-workbench/workbench.db"},
   "max_concurrent": 8,
   "max_body_size": 1048576,
   "lang": "en"
@@ -230,10 +228,11 @@ Config example:
 Paths:
 
 ```text
-all platforms: ~/.config/llm-workbench/config.jsonc   (XDG_CONFIG_HOME wins when set)
+all platforms: ~/.llm-workbench/config.jsonc
+log:           ~/.llm-workbench/logs/llm-workbench.log
 ```
 
-The file is JSONC: `//` and `/* */` comments and trailing commas are accepted, and it is written back as plain JSON. The same document lived at `~/Library/Application Support/llm-workbench/config.json` (macOS) or `~/.config/llm-workbench/config.json` in older releases, and before the rename in `ollama-nothink-proxy`; the first start after upgrading imports the first one it finds, corrects an unusable listen port, and keeps the original next to it as `config.json.bak`.
+The file is JSONC: `//` and `/* */` comments and trailing commas are accepted, and it is written back as plain JSON. Older releases used `~/.config/llm-workbench/config.jsonc`, `~/Library/Application Support/llm-workbench/config.json` (macOS) or `~/.config/llm-workbench/config.json`, and before the rename `ollama-nothink-proxy`; the first start after upgrading imports the first one it finds, corrects an unusable listen port, moves the old database into `~/.llm-workbench`, and keeps the config original next to it as `config.json.bak`. Old log files are removed.
 
 The listen port needs to be free for the proxy, so it is never 11434: a stored `"port": 11434` (or a port equal to the upstream's) is replaced with 11500 and written back once. An explicit `--port 11434` is corrected the same way and reported at startup.
 
@@ -256,12 +255,12 @@ llm-workbench [<command>] [<options>]
 | `--host` | `host` | `127.0.0.1` |
 | `--port` | `port` | `11500` |
 | `--set KEY=VALUE` (repeatable) | `params` | see above |
-| `--config` | — | platform path |
-| `--log` | — | platform path |
-| `--db` | `storage.path` | platform path |
+| `--config` | — | `~/.llm-workbench/config.jsonc` |
+| `--log` | — | `~/.llm-workbench/logs/llm-workbench.log` |
+| `--db` | `storage.path` | `~/.llm-workbench/workbench.db` |
 | `-v`, `--version` | — | — |
 
-Everything else is on the proxy page. There are no environment-variable settings.
+Everything else is configured in the UI. There are no environment-variable settings.
 
 Upgrading from 0.6.0: an already installed LaunchAgent still passes the removed flags, so re-open the autostart switch on the proxy page after upgrading (otherwise launchd restarts a process that exits immediately).
 
@@ -280,7 +279,8 @@ Playground/Experiments (Phase 2+) ──► engine ──► provider/ollama ─
 - `internal/engine`: semantic call orchestration, request IDs, TTFT;
 - `internal/inspector`: capture, redaction, TTFT, async writes;
 - `internal/storage`: SQLite migrations, queries, retention;
-- `internal/workbench`: `/_/workbench` API, Playground / Experiments and React UI;
+- `internal/workbench`: `/_/workbench` API, Playground / Experiments and the shared React UI (also serves the proxy page);
+- `internal/portal`: `/_/llm-proxy` settings/log/autostart/shutdown API;
 - `internal/experiments`: variant × case batches, cancellation, ratings;
 - `internal/proxy`: compatibility plane; only explicit policy rewrites.
 

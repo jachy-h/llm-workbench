@@ -1,14 +1,12 @@
-// Package portal serves the local-only /_/llm-proxy UI: status, live logs,
-// injection params, macOS login autostart and a shutdown button.
+// Package portal serves the local-only /_/llm-proxy API for the proxy
+// settings page: status, live logs, injection params, macOS login autostart
+// and shutdown. The page itself is the React app in internal/workbench.
 //
-// The page is embedded into the binary with //go:embed, so a single file is
-// all a user needs. Every route is restricted to loopback clients because the
-// write endpoints can change config, install a LaunchAgent or stop the proxy.
+// Every route is restricted to loopback clients because the write endpoints
+// can change config, install a LaunchAgent or stop the proxy.
 package portal
 
 import (
-	"bytes"
-	_ "embed"
 	"encoding/json"
 	"io"
 	"net"
@@ -26,19 +24,13 @@ import (
 )
 
 const (
-	// Prefix is the mount point of the portal.
+	// Prefix is the mount point of the portal API.
 	Prefix = "/_/llm-proxy"
 	// MaxBody bounds portal request bodies (config JSON).
 	MaxBody = 256 * 1024
 	// PollMS advertises how often the page polls for new log entries.
 	PollMS = 1000
-	// langPlaceholder marks where the page wants the current language tag, so
-	// the first paint is already in the right language.
-	langPlaceholder = "__LLM_WORKBENCH_LANG__"
 )
-
-//go:embed portal.html
-var pageHTML []byte
 
 // Defaults is the built-in configuration shown by "恢复默认".
 type Defaults struct {
@@ -103,10 +95,14 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) bool {
 	}
 
 	switch {
-	case route == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead):
-		h.servePage(w, r)
 	case route == "/api/state" && r.Method == http.MethodGet:
 		writeJSON(w, http.StatusOK, h.state())
+	case route == "/api/pid" && r.Method == http.MethodGet:
+		// The open page polls this so a restart can reload it; keep it free of
+		// the side effects that h.state() has.
+		writeJSON(w, http.StatusOK, struct {
+			PID int `json:"pid"`
+		}{h.opts.PID})
 	case route == "/api/config" && r.Method == http.MethodPost:
 		h.saveConfig(w, r)
 	case route == "/api/autostart" && (r.Method == http.MethodPost || r.Method == http.MethodDelete):
@@ -229,19 +225,6 @@ func (h *Handler) logCapacity() int {
 
 func (h *Handler) stopping() bool {
 	return h.opts.Stopping != nil && h.opts.Stopping.Load()
-}
-
-func (h *Handler) servePage(w http.ResponseWriter, r *http.Request) {
-	page := pageHTML
-	if h.opts.Config != nil {
-		page = bytes.ReplaceAll(page, []byte(langPlaceholder), []byte(h.opts.Config.Lang().String()))
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Length", strconv.Itoa(len(page)))
-	w.WriteHeader(http.StatusOK)
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(page)
-	}
 }
 
 func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
@@ -387,6 +370,9 @@ func queryInt(r *http.Request, key string, fallback int) int {
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// Everything behind this API is live state; a cached pid would also make
+	// the restart watcher blind.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	encoder := json.NewEncoder(w)
 	encoder.SetEscapeHTML(false)

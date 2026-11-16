@@ -530,7 +530,8 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 		"--db", filepath.Join(dir, "workbench.db"),
 	}, nil)
 
-	// The portal page is embedded in the binary, not read from disk.
+	// /_/llm-proxy serves the shared React shell; the portal package only owns
+	// the API routes behind it now.
 	resp, err := http.Get(p.base + "/_/llm-proxy")
 	if err != nil {
 		t.Fatalf("portal page: %v", err)
@@ -540,10 +541,13 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("portal status = %d", resp.StatusCode)
 	}
-	for _, needle := range []string{"关闭服务", "恢复默认", "logPause", "每秒刷新"} {
+	for _, needle := range []string{`<div id="root">`, "/_/workbench/assets/"} {
 		if !strings.Contains(string(page), needle) {
 			t.Errorf("page missing %q", needle)
 		}
+	}
+	if strings.Contains(string(page), "logPause") {
+		t.Error("old embedded portal page is still being served")
 	}
 
 	resp, err = http.Get(p.base + "/_/llm-proxy/api/state")
@@ -1020,14 +1024,14 @@ func TestEnglishBannerAndHelp(t *testing.T) {
 		}
 	}
 
-	// The page is served in English too: the language tag is the hint the
-	// client-side dictionary reads on the first paint.
+	// The proxy route serves the shared React shell; the server still reports
+	// its language through the state endpoint for logs and the plist comment.
 	page := getPage(t, p.base+"/_/llm-proxy")
-	if !strings.Contains(page, `<html lang="en">`) {
-		t.Error("portal page was not seeded with lang=en")
+	if !strings.Contains(page, `<div id="root">`) {
+		t.Error("proxy route did not serve the React shell")
 	}
-	if strings.Contains(page, "__LLM_WORKBENCH_LANG__") {
-		t.Error("portal page still contains the language placeholder")
+	if state := waitForState(t, p.base, 5*time.Second); state["lang"] != "en" {
+		t.Errorf("state lang = %v, want en", state["lang"])
 	}
 
 	// --lang was removed: it is an unknown flag and exits with code 2.
@@ -1097,10 +1101,6 @@ func TestLanguageSwitchThroughPortal(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"lang": "en"`) {
 		t.Errorf("config file has no lang: %s", raw)
-	}
-
-	if page := getPage(t, p.base+"/_/llm-proxy"); !strings.Contains(page, `<html lang="en">`) {
-		t.Error("page did not switch to lang=en")
 	}
 
 	// Rejected paths are logged, and the log line follows the new language.
