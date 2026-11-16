@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -73,13 +75,13 @@ func TestPrettyPath(t *testing.T) {
 }
 
 func TestBannerIsPlainWhenNotATerminal(t *testing.T) {
-	cfg, err := config.Parse([]string{"--port", "11434", "--no-browser"}, func(string) (string, bool) { return "", false })
+	cfg, err := config.Parse([]string{"--port", "11500", "--no-browser", "--config", filepath.Join(t.TempDir(), "config.json")}, func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 
 	var out bytes.Buffer
-	printBanner(&out, cfg, "http://127.0.0.1:11434/__portal", bannerOptions{
+	printBanner(&out, cfg, "http://127.0.0.1:11500/_/llm-proxy", bannerOptions{
 		Status: "后台运行 (pid 42)",
 		Stop:   "portal 页面上的「关闭服务」",
 	})
@@ -91,8 +93,8 @@ func TestBannerIsPlainWhenNotATerminal(t *testing.T) {
 	for _, needle := range []string{
 		"llm-workbench",
 		"后台运行 (pid 42)",
-		"listen    http://127.0.0.1:11434",
-		"portal    http://127.0.0.1:11434/__portal",
+		"listen    http://127.0.0.1:11500",
+		"proxy     http://127.0.0.1:11500/_/llm-proxy",
 		"inject",
 		"强制关闭思考",
 		"停止服务",
@@ -113,14 +115,15 @@ func TestPaintDisabledByNoColor(t *testing.T) {
 func TestBannerInEnglish(t *testing.T) {
 	t.Cleanup(func() { i18n.Set(i18n.ZH) })
 
-	cfg, err := config.Parse([]string{"--port", "11434", "--no-browser", "--lang", "en"},
+	cfg, err := config.Parse([]string{"--port", "11500", "--no-browser", "--config", filepath.Join(t.TempDir(), "config.json")},
 		func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	i18n.Set(i18n.EN)
 
 	var out bytes.Buffer
-	printBanner(&out, cfg, "http://127.0.0.1:11434/__portal", bannerOptions{
+	printBanner(&out, cfg, "http://127.0.0.1:11500/_/llm-proxy", bannerOptions{
 		Status: i18n.T("banner.statusBackground", 42),
 		Stop:   i18n.T("banner.stopPortalOrKill", 42),
 	})
@@ -131,7 +134,6 @@ func TestBannerInEnglish(t *testing.T) {
 		"concurrency 8",
 		"+ thinking forced off",
 		"settings & logs",
-		"verbose   off",
 	} {
 		if !strings.Contains(text, needle) {
 			t.Errorf("English banner missing %q:\n%s", needle, text)
@@ -143,7 +145,7 @@ func TestBannerInEnglish(t *testing.T) {
 		}
 	}
 	// The labels share a column in both languages.
-	if !strings.Contains(text, "listen    http://127.0.0.1:11434") {
+	if !strings.Contains(text, "listen    http://127.0.0.1:11500") {
 		t.Errorf("English banner lost the label column:\n%s", text)
 	}
 }
@@ -154,14 +156,20 @@ func TestBannerReflectsThinkingMode(t *testing.T) {
 		"on":          "不再强制关闭思考",
 		"passthrough": "思考原样透传",
 	}
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.jsonc")
+	logPath := filepath.Join(dir, "proxy.log")
 	for mode, needle := range cases {
-		cfg, err := config.Parse([]string{"--port", "11434", "--no-browser", "--thinking", mode},
+		cfg, err := config.Parse([]string{"--port", "11500", "--no-browser", "--config", configPath, "--log", logPath},
 			func(string) (string, bool) { return "", false })
 		if err != nil {
 			t.Fatalf("parse %s: %v", mode, err)
 		}
+		if err := cfg.Apply(map[string]json.RawMessage{"thinking": json.RawMessage(`"` + mode + `"`)}); err != nil {
+			t.Fatalf("apply %s: %v", mode, err)
+		}
 		var out bytes.Buffer
-		printBanner(&out, cfg, "http://127.0.0.1:11434/__portal", bannerOptions{})
+		printBanner(&out, cfg, "http://127.0.0.1:11500/_/llm-proxy", bannerOptions{})
 		if !strings.Contains(out.String(), needle) {
 			t.Errorf("banner for %s missing %q:\n%s", mode, needle, out.String())
 		}

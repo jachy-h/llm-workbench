@@ -100,6 +100,15 @@
   .brand h1 { font-size: 15px; letter-spacing: -0.01em; white-space: nowrap; }
   .brand p { margin: 1px 0 0; color: var(--muted); font-size: 12px; white-space: nowrap;
              overflow: hidden; text-overflow: ellipsis; }
+  .nav { display: flex; gap: 2px; flex: none; }
+  .nav a {
+    display: inline-flex; align-items: center; height: 30px;
+    padding: 0 11px; border-radius: 7px;
+    color: var(--muted); text-decoration: none; font-size: 13px;
+    transition: color .14s ease, background .14s ease;
+  }
+  .nav a:hover { color: var(--ink); background: var(--chip); }
+  .nav a[aria-current="page"] { color: var(--ink); background: var(--accent-soft); font-weight: 600; }
   .chips { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
   .chip {
     font: 11.5px/1 var(--mono); color: var(--muted);
@@ -150,15 +159,16 @@
   /* ---- settings ------------------------------------------------------- */
   .field2 { display: grid; grid-template-columns: 1fr 96px; gap: 10px; }
   label { display: block; font-size: 12px; color: var(--muted); }
-  input[type="text"], input[type="number"], textarea {
+  input[type="text"], input[type="number"], select, textarea {
     width: 100%; margin-top: 5px;
     font: 13px/1.5 var(--mono); color: var(--ink);
     background: var(--sunken); border: 1px solid var(--line);
     border-radius: 8px; padding: 8px 10px;
     transition: border-color .15s ease, box-shadow .15s ease;
   }
-  input:hover, textarea:hover { border-color: var(--line-strong); }
-  input:focus, textarea:focus {
+  select { font-family: inherit; font-size: 13px; }
+  input:hover, select:hover, textarea:hover { border-color: var(--line-strong); }
+  input:focus, select:focus, textarea:focus {
     outline: none; border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-soft);
   }
@@ -308,9 +318,12 @@
   }
   @media (max-width: 620px) {
     .bar { padding: 10px 14px; gap: 10px; }
+    .nav { order: 2; width: 100%; }
+    .nav a { height: 36px; flex: 1; justify-content: center; }
     .brand p { display: none; }
     .shell { padding: 10px 12px 14px; gap: 10px; }
     .actions { margin-left: auto; }
+    button { min-height: 40px; }
     .field2 { grid-template-columns: 1fr; }
     .facts div { grid-template-columns: 56px minmax(0, 1fr); }
   }
@@ -326,9 +339,15 @@
     <span class="mark" aria-hidden="true">LW</span>
     <div>
       <h1>LLM Workbench</h1>
-      <p data-i18n="app.tagline">本机 LLM 代理与实验工作台 · Ollama 优先</p>
+      <p data-i18n="app.tagline">本机 LLM 代理与实验工作台 · 支持 Ollama 与更多 Provider</p>
     </div>
   </div>
+  <nav class="nav" aria-label="LLM Workbench">
+    <a href="/_/llm-proxy" aria-current="page" data-i18n="nav.proxy">代理</a>
+    <a href="/_/workbench/#requests" data-i18n="nav.requests">请求</a>
+    <a href="/_/workbench/#playground" data-i18n="nav.playground">试验场</a>
+    <a href="/_/workbench/#experiments" data-i18n="nav.experiments">实验</a>
+  </nav>
   <div class="chips">
     <span class="chip" id="version">v…</span>
     <span class="chip" id="listenChip">—</span>
@@ -343,12 +362,20 @@
 
 <main class="shell">
   <div class="col left">
-    <section class="panel" style="flex:1 1 auto;">
+    <section class="panel">
+      <div class="panel-body row">
+        <button id="save" data-i18n="action.save">保存并生效</button>
+        <button id="defaults" class="ghost" data-i18n="action.defaults">恢复默认</button>
+        <span class="msg" id="cfgMsg" role="status"></span>
+      </div>
+    </section>
+
+    <section class="panel">
       <div class="panel-head">
-        <h2 data-i18n="panel.params">参数</h2>
+        <h2 data-i18n="panel.params">上游与参数</h2>
         <span class="aside-note" data-i18n="panel.paramsNote">只补客户端没传的字段</span>
       </div>
-      <div class="panel-body grow">
+      <div class="panel-body">
         <div class="field2">
           <label for="upstream"><span data-i18n="field.upstream">上游 Ollama 地址</span>
             <input id="upstream" type="text" spellcheck="false" autocomplete="off">
@@ -363,11 +390,97 @@
           <textarea id="params" spellcheck="false" autocomplete="off"
                     placeholder='{"max_tokens": 96, "temperature": 0.2}'></textarea>
         </label>
-        <div class="row">
-          <button id="save" data-i18n="action.save">保存并生效</button>
-          <button id="defaults" class="ghost" data-i18n="action.defaults">恢复默认</button>
-          <span class="msg" id="cfgMsg" role="status"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2 data-i18n="panel.limits">限制</h2>
+        <span class="aside-note" data-i18n="hint.restart">改动后需重启</span>
+      </div>
+      <div class="panel-body">
+        <div class="field2">
+          <label for="maxConcurrent"><span data-i18n="field.maxConcurrent">最大并发</span>
+            <input id="maxConcurrent" type="number" min="1" step="1">
+          </label>
+          <label for="maxBodySize"><span data-i18n="field.maxBodySize">请求体上限（字节）</span>
+            <input id="maxBodySize" type="number" min="1" step="1">
+          </label>
         </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2 data-i18n="panel.policy">思考与提示词</h2>
+        <span class="aside-note good" data-i18n="panel.policyNote">立即生效</span>
+      </div>
+      <div class="panel-body">
+        <label for="thinking"><span data-i18n="field.thinking">Thinking 模式</span>
+          <select id="thinking">
+            <option value="off" data-i18n="thinking.off">off</option>
+            <option value="on" data-i18n="thinking.on">on</option>
+            <option value="passthrough" data-i18n="thinking.passthrough">passthrough</option>
+          </select>
+        </label>
+        <label for="systemMode"><span data-i18n="field.systemMode">System Prompt 模式</span>
+          <select id="systemMode">
+            <option value="off" data-i18n="prompt.off">关闭</option>
+            <option value="inject-if-missing" data-i18n="prompt.inject">缺失时注入</option>
+            <option value="override" data-i18n="prompt.override">覆盖已有</option>
+          </select>
+        </label>
+        <label class="growable" for="systemText">
+          <span data-i18n="field.systemText">System Prompt 文本</span>
+          <textarea id="systemText" spellcheck="false" autocomplete="off"></textarea>
+        </label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2 data-i18n="panel.profiles">Profile</h2>
+        <span class="aside-note" data-i18n="panel.profilesNote">留空 = 使用上面的全局设置</span>
+      </div>
+      <div class="panel-body">
+        <label for="profile"><span data-i18n="field.profile">默认 Profile</span>
+          <input id="profile" type="text" spellcheck="false" autocomplete="off" placeholder="nothink / raw / thinking">
+        </label>
+        <label class="growable" for="profiles">
+          <span class="label-row"><span data-i18n="field.profiles">Profiles（JSON 对象）</span>
+            <span class="aside-note" id="profilesMeta"></span></span>
+          <textarea id="profiles" spellcheck="false" autocomplete="off"></textarea>
+        </label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2 data-i18n="panel.history">请求历史</h2>
+        <span class="aside-note" data-i18n="hint.restart">改动后需重启</span>
+      </div>
+      <div class="panel-body">
+        <label class="switch" for="insEnabled">
+          <input type="checkbox" id="insEnabled">
+          <span class="track"><span class="knob"></span></span>
+          <span class="switch-label" data-i18n="field.inspectorEnabled">记录请求历史</span>
+        </label>
+        <label class="switch" for="captureBodies">
+          <input type="checkbox" id="captureBodies">
+          <span class="track"><span class="knob"></span></span>
+          <span class="switch-label" data-i18n="field.captureBodies">保存请求/响应正文</span>
+        </label>
+        <div class="field2">
+          <label for="retentionDays"><span data-i18n="field.retentionDays">保留天数（0 = 永久）</span>
+            <input id="retentionDays" type="number" min="0" step="1">
+          </label>
+          <label for="maxRows"><span data-i18n="field.maxRows">最多条数（0 = 不限）</span>
+            <input id="maxRows" type="number" min="0" step="1">
+          </label>
+        </div>
+        <label for="maxBodyBytes"><span data-i18n="field.maxBodyBytes">单条正文上限（字节）</span>
+          <input id="maxBodyBytes" type="number" min="0" step="1">
+        </label>
       </div>
     </section>
 
@@ -392,8 +505,14 @@
     </section>
 
     <section class="panel">
-      <div class="panel-head"><h2 data-i18n="panel.files">文件</h2></div>
+      <div class="panel-head">
+        <h2 data-i18n="panel.files">文件</h2>
+        <span class="aside-note" data-i18n="hint.restart">改动后需重启</span>
+      </div>
       <div class="panel-body">
+        <label for="dbPath"><span data-i18n="field.db">数据库</span>
+          <input id="dbPath" type="text" spellcheck="false" autocomplete="off">
+        </label>
         <dl class="facts">
           <div><dt data-i18n="field.config">配置</dt><dd id="configPath" title="">—</dd></div>
           <div><dt data-i18n="field.log">日志</dt><dd id="logPath" title="">—</dd></div>
@@ -419,7 +538,8 @@
 <script>
 (function () {
   "use strict";
-  var BASE = "/__portal/api/";
+  var BASE = "/_/llm-proxy/api/";
+  var LANG_KEY = "llm-workbench-lang";
   var LOG_MAX = 100;
   var POLL_MS = 1000;
   var state = null;
@@ -431,8 +551,12 @@
   // first paint: after that the choice lives in localStorage.
   var DICT = {
     zh: {
-      "app.title": "LLM Workbench · 控制台",
-      "app.tagline": "本机 LLM 代理与实验工作台 · Ollama 优先",
+      "app.title": "LLM Workbench · 代理",
+      "app.tagline": "本机 LLM 代理与实验工作台 · 支持 Ollama 与更多 Provider",
+      "nav.proxy": "代理",
+      "nav.requests": "请求",
+      "nav.playground": "试验场",
+      "nav.experiments": "实验",
       "action.lang": "切换界面语言",
       "action.shutdown": "关闭服务",
       "action.save": "保存并生效",
@@ -442,8 +566,14 @@
       "status.running": "运行中",
       "status.stopping": "关闭中…",
       "status.stopped": "已停止",
-      "panel.params": "参数",
+      "panel.params": "上游与参数",
       "panel.paramsNote": "只补客户端没传的字段",
+      "panel.limits": "限制",
+      "panel.policy": "思考与提示词",
+      "panel.policyNote": "立即生效",
+      "panel.profiles": "Profile",
+      "panel.profilesNote": "留空 = 使用上面的全局设置",
+      "panel.history": "请求历史",
       "panel.autostart": "启动项",
       "panel.autostartNote": "登录 macOS 后由 launchd 拉起",
       "panel.files": "文件",
@@ -451,9 +581,29 @@
       "field.upstream": "上游 Ollama 地址",
       "field.timeout": "超时（秒）",
       "field.params": "注入参数（JSON 对象）",
+      "field.maxConcurrent": "最大并发",
+      "field.maxBodySize": "请求体上限（字节）",
+      "field.thinking": "Thinking 模式",
+      "thinking.off": "off（强制关闭）",
+      "thinking.on": "on（保留客户端）",
+      "thinking.passthrough": "passthrough（原样透传）",
+      "field.systemMode": "System Prompt 模式",
+      "prompt.off": "关闭",
+      "prompt.inject": "缺失时注入",
+      "prompt.override": "覆盖已有",
+      "field.systemText": "System Prompt 文本",
+      "field.profile": "默认 Profile",
+      "field.profiles": "Profiles（JSON 对象）",
+      "field.inspectorEnabled": "记录请求历史",
+      "field.captureBodies": "保存请求/响应正文",
+      "field.retentionDays": "保留天数（0 = 永久）",
+      "field.maxRows": "最多条数（0 = 不限）",
+      "field.maxBodyBytes": "单条正文上限（字节）",
+      "field.db": "数据库",
       "field.autostart": "开机自动启动",
       "field.config": "配置",
       "field.log": "日志",
+      "hint.restart": "改动后需重启",
       "hint.noAutostart": "当前系统不支持（只有 macOS 能装 LaunchAgent）。",
       "live.everySecond": "每秒刷新",
       "live.paused": "已暂停",
@@ -470,9 +620,15 @@
       "params.notObject": "需要一个 JSON 对象",
       "params.count": "{n} 个参数",
       "params.empty": "空对象",
+      "profiles.badJSON": "JSON 格式有误",
+      "profiles.notObject": "需要一个 JSON 对象",
+      "profiles.count": "{n} 个 profile",
+      "profiles.empty": "空对象",
       "msg.saved": "已保存并生效",
       "msg.badJSON": "参数不是合法 JSON: {msg}",
       "msg.notObject": "参数必须是 JSON 对象，例如 {\"max_tokens\": 96}",
+      "msg.badProfiles": "profiles 不是合法 JSON: {msg}",
+      "msg.profilesNotObject": "profiles 必须是 JSON 对象",
       "msg.defaultsFilled": "已填回默认值，点「保存并生效」写入",
       "msg.noDefaults": "还没取到内置默认值，稍后再试",
       "msg.installing": "正在安装…",
@@ -482,8 +638,12 @@
       "confirm.shutdown": "确定关闭 llm-workbench 服务？本页面会立刻断开。"
     },
     en: {
-      "app.title": "LLM Workbench · console",
-      "app.tagline": "local LLM proxy & workbench · Ollama first",
+      "app.title": "LLM Workbench · proxy",
+      "app.tagline": "local LLM proxy & workbench · Ollama and more providers",
+      "nav.proxy": "Proxy",
+      "nav.requests": "Requests",
+      "nav.playground": "Playground",
+      "nav.experiments": "Experiments",
       "action.lang": "Switch the interface language",
       "action.shutdown": "Shut down",
       "action.save": "Save",
@@ -493,8 +653,14 @@
       "status.running": "running",
       "status.stopping": "stopping…",
       "status.stopped": "stopped",
-      "panel.params": "Params",
+      "panel.params": "Upstream & params",
       "panel.paramsNote": "only fields the client left out",
+      "panel.limits": "Limits",
+      "panel.policy": "Thinking & prompt",
+      "panel.policyNote": "applies immediately",
+      "panel.profiles": "Profiles",
+      "panel.profilesNote": "empty = use the global settings above",
+      "panel.history": "Request history",
       "panel.autostart": "Startup",
       "panel.autostartNote": "launchd starts it after you log in",
       "panel.files": "Files",
@@ -502,9 +668,29 @@
       "field.upstream": "Upstream Ollama URL",
       "field.timeout": "Timeout (s)",
       "field.params": "Injected params (JSON object)",
+      "field.maxConcurrent": "Max concurrent",
+      "field.maxBodySize": "Request body limit (bytes)",
+      "field.thinking": "Thinking mode",
+      "thinking.off": "off (force off)",
+      "thinking.on": "on (keep client)",
+      "thinking.passthrough": "passthrough",
+      "field.systemMode": "System prompt mode",
+      "prompt.off": "off",
+      "prompt.inject": "inject if missing",
+      "prompt.override": "override",
+      "field.systemText": "System prompt text",
+      "field.profile": "Default profile",
+      "field.profiles": "Profiles (JSON object)",
+      "field.inspectorEnabled": "Record request history",
+      "field.captureBodies": "Persist request/response bodies",
+      "field.retentionDays": "Retention days (0 = forever)",
+      "field.maxRows": "Max rows (0 = unlimited)",
+      "field.maxBodyBytes": "Body limit per record (bytes)",
+      "field.db": "Database",
       "field.autostart": "Start at login",
       "field.config": "config",
       "field.log": "log",
+      "hint.restart": "takes effect after a restart",
       "hint.noAutostart": "Not supported on this system (only macOS can install a LaunchAgent).",
       "live.everySecond": "refreshes every second",
       "live.paused": "paused",
@@ -521,9 +707,15 @@
       "params.notObject": "expected a JSON object",
       "params.count": "{n} params",
       "params.empty": "empty object",
+      "profiles.badJSON": "invalid JSON",
+      "profiles.notObject": "expected a JSON object",
+      "profiles.count": "{n} profiles",
+      "profiles.empty": "empty object",
       "msg.saved": "saved and applied",
       "msg.badJSON": "params are not valid JSON: {msg}",
       "msg.notObject": "params must be a JSON object, e.g. {\"max_tokens\": 96}",
+      "msg.badProfiles": "profiles are not valid JSON: {msg}",
+      "msg.profilesNotObject": "profiles must be a JSON object",
       "msg.defaultsFilled": "defaults filled in — press “Save” to write them",
       "msg.noDefaults": "no built-in defaults yet, try again",
       "msg.installing": "installing…",
@@ -572,6 +764,7 @@
       : (log.paused ? t("live.paused") : t("live.everySecond"));
     $("logCount").textContent = t("logs.count", { n: $("logList").childElementCount });
     updateParamsMeta();
+    updateProfilesMeta();
     if (!state) { return; }
     renderAutostart(state.autostart);
     if (log.stopping) {
@@ -688,7 +881,23 @@
     $("upstream").value = next.upstream;
     $("timeout").value = String(next.timeout);
     $("params").value = JSON.stringify(next.params, null, 2);
+    $("maxConcurrent").value = String(next.max_concurrent);
+    $("maxBodySize").value = String(next.max_body_size);
+    $("thinking").value = next.thinking || "off";
+    var prompt = next.system_prompt || {};
+    $("systemMode").value = prompt.mode || "off";
+    $("systemText").value = prompt.text || "";
+    $("profile").value = next.profile || "";
+    $("profiles").value = JSON.stringify(next.profiles || {}, null, 2);
+    var history = next.inspector || {};
+    $("insEnabled").checked = !!history.enabled;
+    $("captureBodies").checked = !!history.capture_bodies;
+    $("retentionDays").value = String(history.retention_days || 0);
+    $("maxRows").value = String(history.max_rows || 0);
+    $("maxBodyBytes").value = String(history.max_body_bytes || 0);
+    $("dbPath").value = (next.storage && next.storage.path) || "";
     updateParamsMeta();
+    updateProfilesMeta();
   }
 
   function loadState() {
@@ -721,6 +930,26 @@
     meta.className = "aside-note good";
   }
 
+  function updateProfilesMeta() {
+    var meta = $("profilesMeta");
+    var parsed;
+    try {
+      parsed = JSON.parse($("profiles").value || "{}");
+    } catch (err) {
+      meta.textContent = t("profiles.badJSON");
+      meta.className = "aside-note bad";
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      meta.textContent = t("profiles.notObject");
+      meta.className = "aside-note bad";
+      return;
+    }
+    var keys = Object.keys(parsed);
+    meta.textContent = keys.length ? t("profiles.count", { n: keys.length }) : t("profiles.empty");
+    meta.className = "aside-note good";
+  }
+
   // ---- log rendering -----------------------------------------------------
   var LEVEL_CLASS = { error: "lv-error", warn: "lv-warn", ok: "lv-ok", info: "" };
   var VERB_CLASS = {
@@ -734,7 +963,7 @@
   var TEXT_RULES = [
     { re: /(失败|错误|异常|超时|Traceback|refused|timeout|Timeout|failed|Failed|error|502|503|504)/, cls: "hl-bad" },
     { re: /(已启动|已安装|已加载|已保存|已删除|已生效|已关闭|成功|installed|loaded|saved|applied|removed|started)/, cls: "hl-good" },
-    { re: /(portal:\s*\S+)/, cls: "hl-portal" },
+    { re: /(proxy:\s*\S+)/, cls: "hl-portal" },
     { re: /(injected:v1|injected:native|pass\([^)]*\)|\bstart\b|\bstop\b)/, cls: "hl-tag" },
     { re: /(\d+(?:\.\d+)?\s?(?:ms|秒|s)\b)/, cls: "hl-num" }
   ];
@@ -878,13 +1107,16 @@
   // ---- events ------------------------------------------------------------
   $("langToggle").addEventListener("click", function () {
     applyLang(LANG === "en" ? "zh" : "en");
-    try { window.localStorage.setItem("onp-lang", LANG); } catch (err) { /* private mode */ }
-    // Tell the server too: its log lines and the generated plist follow suit.
-    post("config", { lang: LANG }).then(render).catch(function () { /* the page already switched */ });
+    try { window.localStorage.setItem(LANG_KEY, LANG); } catch (err) { /* private mode */ }
+    // Persist the choice for server-side output (log lines, plist comment)
+    // without re-rendering the form, which may hold unsaved edits.
+    post("config", { lang: LANG }).then(function (next) {
+      if (state) { state.lang = next.lang; }
+    }).catch(function () { /* the local switch still works */ });
   });
 
   $("save").addEventListener("click", function () {
-    var params;
+    var params, profiles;
     try {
       params = JSON.parse($("params").value || "{}");
     } catch (err) {
@@ -895,11 +1127,38 @@
       fail("cfgMsg", t("msg.notObject"));
       return;
     }
+    try {
+      profiles = JSON.parse($("profiles").value || "{}");
+    } catch (err) {
+      fail("cfgMsg", t("msg.badProfiles", { msg: err.message }));
+      return;
+    }
+    if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) {
+      fail("cfgMsg", t("msg.profilesNotObject"));
+      return;
+    }
     busy(["save"], true);
     post("config", {
       upstream: $("upstream").value.trim(),
       timeout: parseFloat($("timeout").value),
-      params: params
+      params: params,
+      max_concurrent: parseInt($("maxConcurrent").value, 10),
+      max_body_size: parseInt($("maxBodySize").value, 10),
+      thinking: $("thinking").value,
+      system_prompt: {
+        mode: $("systemMode").value,
+        text: $("systemText").value
+      },
+      profile: $("profile").value.trim(),
+      profiles: profiles,
+      inspector: {
+        enabled: $("insEnabled").checked,
+        capture_bodies: $("captureBodies").checked,
+        retention_days: parseInt($("retentionDays").value, 10) || 0,
+        max_rows: parseInt($("maxRows").value, 10) || 0,
+        max_body_bytes: parseInt($("maxBodyBytes").value, 10) || 0
+      },
+      storage: { path: $("dbPath").value.trim() }
     }).then(function (next) {
       render(next);
       msg("cfgMsg", t("msg.saved"), "ok");
@@ -918,6 +1177,18 @@
     $("upstream").value = d.upstream;
     $("timeout").value = String(d.timeout);
     $("params").value = JSON.stringify(d.params, null, 2);
+    $("maxConcurrent").value = String(d.max_concurrent);
+    $("maxBodySize").value = String(d.max_body_size);
+    $("thinking").value = d.thinking || "off";
+    $("systemMode").value = (d.system_prompt && d.system_prompt.mode) || "off";
+    $("systemText").value = (d.system_prompt && d.system_prompt.text) || "";
+    var history = d.inspector || {};
+    $("insEnabled").checked = !!history.enabled;
+    $("captureBodies").checked = !!history.capture_bodies;
+    $("retentionDays").value = String(history.retention_days || 0);
+    $("maxRows").value = String(history.max_rows || 0);
+    $("maxBodyBytes").value = String(history.max_body_bytes || 0);
+    $("dbPath").value = (d.storage && d.storage.path) || "";
     updateParamsMeta();
     msg("cfgMsg", t("msg.defaultsFilled"), "ok");
   });
@@ -960,15 +1231,25 @@
 
   $("logPause").addEventListener("click", function () { setPaused(!log.paused); });
   $("params").addEventListener("input", updateParamsMeta);
+  $("profiles").addEventListener("input", updateProfilesMeta);
 
-  // The server seeds the language through <html lang>; a choice made in this
-  // page wins from then on.
-  var initial = document.documentElement.lang || "zh";
+  // Both pages make the same choice: a saved browser choice wins, then the
+  // browser locale. The server-seeded language only paints the page before
+  // this script runs.
+  var initial = "";
   try {
-    var saved = window.localStorage.getItem("onp-lang");
+    var saved = window.localStorage.getItem(LANG_KEY);
     if (saved === "en" || saved === "zh") { initial = saved; }
   } catch (err) { /* private mode */ }
+  if (!initial) {
+    initial = (window.navigator.language || "").toLowerCase().indexOf("zh") === 0 ? "zh" : "en";
+  }
   applyLang(initial);
+  window.addEventListener("storage", function (event) {
+    if (event.key === LANG_KEY && (event.newValue === "en" || event.newValue === "zh")) {
+      applyLang(event.newValue);
+    }
+  });
 
   loadState().then(function () {
     logTick();

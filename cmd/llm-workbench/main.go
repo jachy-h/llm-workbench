@@ -48,9 +48,6 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	command, rest := config.SplitCommand(args)
-	if command == config.CommandMigrate {
-		return runMigrate(rest, stdout, stderr)
-	}
 	cfg, err := config.ParseRuntime(rest, os.LookupEnv)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
@@ -66,10 +63,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	portalURL := cfg.ListenURL() + portal.Prefix
-	note := ""
-	if command == config.CommandRestart {
-		var code int
-		note, code = restartInstance(cfg, portalURL, len(rest) > 0, stdout, stderr)
+	// A one-time import is worth a line: the file moved, and the banner shows
+	// the new location right below it.
+	if cfg.MigratedFrom != "" {
+		fmt.Fprintf(stdout, i18n.T("cli.configMigrated")+"\n", prettyPath(cfg.MigratedFrom), prettyPath(cfg.ConfigPath))
+	}
+	if cfg.PortRequested != 0 {
+		fmt.Fprintf(stdout, i18n.T("cli.portAdjusted")+"\n", cfg.PortRequested, cfg.Port)
+	}
+	switch command {
+	case config.CommandStop:
+		return stopInstance(cfg, portalURL, stdout, stderr)
+	case config.CommandRestart:
+		note, code := restartInstance(cfg, portalURL, len(rest) > 0, stdout, stderr)
 		if code != 0 {
 			return code
 		}
@@ -77,11 +83,61 @@ func run(args []string, stdout, stderr io.Writer) int {
 			// launchd restarted the job itself and the banner is already out.
 			return 0
 		}
+		if !cfg.Foreground {
+			return runBackground(rest, cfg, portalURL, note, stdout, stderr)
+		}
+		return runForeground(cfg, portalURL, note, stdout, stderr)
 	}
 	if !cfg.Foreground {
-		return runBackground(rest, cfg, portalURL, note, stdout, stderr)
+		return runBackground(rest, cfg, portalURL, "", stdout, stderr)
 	}
-	return runForeground(cfg, portalURL, note, stdout, stderr)
+	return runForeground(cfg, portalURL, "", stdout, stderr)
+}
+
+// stopInstance shuts down whatever answers on the portal URL. Stopping when
+// nothing is running is not an error: the command is idempotent.
+func stopInstance(cfg *config.Config, portalURL string, stdout, stderr io.Writer) int {
+	// launchd's KeepAlive would start a supervised process again right after a
+	// normal shutdown, so unload the job instead. The plist stays in place and
+	// the next login starts it again.
+	current, running := daemon.Inspect(portalURL, time.Second)
+	if running && launchdOwns(current.PID) {
+		if err := autostart.StopJob(); err != nil {
+			fmt.Fprintf(stderr, i18n.T("cli.errStop")+"\n", err)
+			return 1
+		}
+		if !waitForStop(portalURL, startupWait) {
+			fmt.Fprintf(stderr, i18n.T("cli.errStop")+"\n", i18n.T("daemon.errStopTimeout", startupWait))
+			return 1
+		}
+		fmt.Fprintf(stdout, i18n.T("cli.stoppedLaunchd")+"\n", portalURL)
+		return 0
+	}
+
+	err := daemon.Stop(portalURL, startupWait)
+	switch {
+	case errors.Is(err, daemon.ErrNotRunning):
+		fmt.Fprintln(stdout, i18n.T("cli.stopNothing"))
+		return 0
+	case err != nil:
+		fmt.Fprintf(stderr, i18n.T("cli.errStop")+"\n", err)
+		fmt.Fprintf(stderr, i18n.T("cli.hintLog")+"\n", prettyPath(cfg.LogPath))
+		return 1
+	}
+	fmt.Fprintf(stdout, i18n.T("cli.stopped")+"\n", portalURL)
+	return 0
+}
+
+// waitForStop waits until the portal stops answering.
+func waitForStop(portalURL string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, ok := daemon.Inspect(portalURL, 400*time.Millisecond); !ok {
+			return true
+		}
+		time.Sleep(120 * time.Millisecond)
+	}
+	return false
 }
 
 // restartInstance stops whatever answers on the portal URL and reports a note
@@ -157,43 +213,6 @@ func waitForRestart(portalURL string, before daemon.Instance, hadBefore bool, ti
 		time.Sleep(120 * time.Millisecond)
 	}
 	return daemon.Instance{}, false
-}
-
-// runMigrate copies the pre-rename config to the new location and reports
-// what still needs manual attention. It never starts the proxy or touches
-// launchd.
-func runMigrate(args []string, stdout, stderr io.Writer) int {
-	i18n.Set(i18n.Detect(os.LookupEnv))
-	// Parse first: it validates the old config (read as a fallback) and settles
-	// the output language, including --lang.
-	if _, err := config.ParseRuntime(args, os.LookupEnv); err != nil {
-		fmt.Fprintf(stderr, i18n.T("cli.errParse")+"\n", err)
-		return 2
-	}
-
-	dst := config.ConfigPathFromArgs(args)
-	result, err := config.ImportLegacyConfig(dst)
-	if err != nil {
-		fmt.Fprintf(stderr, i18n.T("cli.errMigrate")+"\n", err)
-		return 1
-	}
-
-	switch result.Reason {
-	case "copied":
-		fmt.Fprintf(stdout, i18n.T("cli.migrateCopied")+"\n", result.Destination)
-	case "destination_exists":
-		fmt.Fprintf(stdout, i18n.T("cli.migrateExists")+"\n", result.Destination)
-	default:
-		fmt.Fprintf(stdout, i18n.T("cli.migrateMissing")+"\n", result.Source)
-	}
-
-	if autostart.LegacyInstalled() {
-		fmt.Fprintf(stdout, i18n.T("cli.migrateLegacyAgent")+"\n",
-			autostart.LegacyPlistPath(), autostart.LegacyPlistPath())
-	}
-
-	fmt.Fprintln(stdout, i18n.T("cli.migrateDone"))
-	return 0
 }
 
 // recorderFunc adapts logstore.Log (which returns the entry) to the small
@@ -286,15 +305,13 @@ func runForeground(cfg *config.Config, portalURL, note string, stdout, stderr io
 	handler, err := proxy.New(proxy.Options{
 		Upstream:         cfg.UpstreamURL(),
 		Settings:         cfg,
-		MaxConcurrent:    cfg.MaxConcurrent,
-		MaxBodySize:      cfg.MaxBodySize,
-		Verbose:          cfg.Verbose,
+		MaxConcurrent:    cfg.MaxConcurrent(),
+		MaxBodySize:      cfg.MaxBodySize(),
 		CaptureBodyLimit: cfg.Inspector().MaxBodyBytes,
 		CaptureRecorder:  captureRecorder,
 		Recorder: recorderFunc(func(method, path string, status int, note, client, detail string) {
 			logs.WriteRequest(method, path, status, note, client, detail)
 		}),
-		Console:  stdout,
 		ErrorLog: stderr,
 	})
 	if err != nil {
@@ -411,38 +428,23 @@ func runForeground(cfg *config.Config, portalURL, note string, stdout, stderr io
 }
 
 // launchCommand is the argv a LaunchAgent should run: the proxy in the
-// foreground so launchd supervises the real process.
+// foreground so launchd supervises the real process. Everything except the
+// bootstrap paths and listen address lives in the config file and is read at
+// launch, so changing a setting on the page is enough.
 func launchCommand(cfg *config.Config) []string {
 	exe, err := os.Executable()
 	if err != nil || exe == "" {
 		return nil
 	}
-	args := []string{
+	return []string{
 		exe,
 		"--host", cfg.Host,
 		"--port", strconv.Itoa(cfg.Port),
-		"--upstream", cfg.Upstream(),
-		"--timeout", strconv.FormatFloat(cfg.Timeout().Seconds(), 'f', -1, 64),
 		"--config", cfg.ConfigPath,
 		"--log", cfg.LogPath,
-		"--db", cfg.Storage().Path,
-		"--retention-days", strconv.Itoa(cfg.Inspector().RetentionDays),
-		"--max-rows", strconv.Itoa(cfg.Inspector().MaxRows),
-		"--lang", cfg.Lang().String(),
-		"--thinking", string(cfg.Thinking()),
 		"--foreground",
 		"--no-browser",
 	}
-	if !cfg.Inspector().Enabled {
-		args = append(args, "--no-inspector")
-	}
-	if cfg.Inspector().CaptureBodies {
-		args = append(args, "--capture-bodies")
-	}
-	if profile := cfg.ActiveProfile(); profile != "" {
-		args = append(args, "--profile", profile)
-	}
-	return args
 }
 
 func workdir() string {

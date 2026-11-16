@@ -1,6 +1,6 @@
 # Inspector（请求历史）
 
-Inspector 把经过代理的 chat 请求写入本地 SQLite，并在 `/__workbench` 中展示。它是 Phase 2a 的交付。
+Inspector 把经过代理的 chat 请求写入本地 SQLite，并在 `/_/workbench` 中展示。它是 Phase 2a 的交付。
 
 ## 默认行为
 
@@ -10,19 +10,11 @@ Inspector 把经过代理的 chat 请求写入本地 SQLite，并在 `/__workben
 - 只捕获 `POST /v1/chat/completions`、`POST /api/chat`，以及 Playground / Experiments 的语义调用；其他代理路径完全透传，不产生记录。
 - 捕获异步写入，队列满时丢弃并计数，不阻塞代理。
 
-写入正文：
+写入正文：在代理页面打开「保存请求/响应正文」。
 
-```bash
-llm-workbench --capture-bodies
-```
+完全关闭：在代理页面关闭「记录请求历史」。
 
-完全关闭：
-
-```bash
-llm-workbench --no-inspector
-```
-
-关闭后不再写入新记录，已有历史仍可通过 `/__workbench` 查看；只有数据库本身无法打开时，历史接口才返回 503。
+关闭后不再写入新记录，已有历史仍可通过 `/_/workbench` 查看；只有数据库本身无法打开时，历史接口才返回 503。
 
 ## 数据位置
 
@@ -32,11 +24,7 @@ Linux:   ~/.local/share/llm-workbench/workbench.db
 Windows: %LOCALAPPDATA%\llm-workbench\workbench.db
 ```
 
-自定义：
-
-```bash
-llm-workbench --db /path/to/workbench.db
-```
+自定义：在代理页面填写数据库路径，或用 `--db` 作为启动项覆盖。
 
 SQLite 使用 WAL、`synchronous=NORMAL`、5s busy timeout。写入串行化，避免并发写导致 `SQLITE_BUSY`。
 
@@ -91,8 +79,8 @@ SQLite 使用 WAL、`synchronous=NORMAL`、5s busy timeout。写入串行化，�
 - `max_rows=0`：不按条数删除；
 - 启动时和之后每小时清理一次；
 - 删除操作：
-  - 单条：`DELETE /__workbench/api/requests/{id}`；
-  - 按筛选：`DELETE /__workbench/api/requests?source=proxy`；
+  - 单条：`DELETE /_/workbench/api/requests/{id}`；
+  - 按筛选：`DELETE /_/workbench/api/requests?source=proxy`；
   - 全部：必须显式 `?all=true`。
 
 ## API
@@ -100,21 +88,21 @@ SQLite 使用 WAL、`synchronous=NORMAL`、5s busy timeout。写入串行化，�
 所有路由仅 loopback，并校验 Host / Origin：
 
 ```text
-GET    /__workbench/api/health
-GET    /__workbench/api/stats
-GET    /__workbench/api/requests?limit=&offset=&q=&source=&provider=&model=&status=&since=&until=
-GET    /__workbench/api/requests/{id}
-DELETE /__workbench/api/requests/{id}
-DELETE /__workbench/api/requests?...
-GET    /__workbench/api/requests/export?format=json|jsonl|csv
-GET    /__workbench/api/requests/{id}/export
+GET    /_/workbench/api/health
+GET    /_/workbench/api/stats
+GET    /_/workbench/api/requests?limit=&offset=&q=&source=&provider=&model=&status=&since=&until=
+GET    /_/workbench/api/requests/{id}
+DELETE /_/workbench/api/requests/{id}
+DELETE /_/workbench/api/requests?...
+GET    /_/workbench/api/requests/export?format=json|jsonl|csv
+GET    /_/workbench/api/requests/{id}/export
 ```
 
 列表默认 100 条，最大 500；导出默认 1000 条，最大 5000。时间筛选使用 RFC3339。
 
 ## UI
 
-`/__workbench/` 是 React + Vite 构建的本地 SPA：
+`/_/workbench/` 是 React + Vite 构建的本地 SPA：
 
 - Requests 列表 + 筛选 + 分页；
 - 详情：request / forwarded / response / raw 四个视图；

@@ -93,14 +93,11 @@ func TestDetectPrecedence(t *testing.T) {
 		want   Lang
 	}{
 		{"nothing set", nil, ZH},
-		{"LLM_WORKBENCH_LANG wins", map[string]string{"LLM_WORKBENCH_LANG": "en", "LANG": "zh_CN.UTF-8"}, EN},
-		{"ONP_LANG alias", map[string]string{"ONP_LANG": "en", "LANG": "zh_CN.UTF-8"}, EN},
-		{"new variable beats ONP_LANG", map[string]string{"LLM_WORKBENCH_LANG": "zh", "ONP_LANG": "en"}, ZH},
+		{"LLM_WORKBENCH_LANG is ignored", map[string]string{"LLM_WORKBENCH_LANG": "en", "LANG": "zh_CN.UTF-8"}, ZH},
 		{"LC_ALL wins over LANG", map[string]string{"LC_ALL": "en_US.UTF-8", "LANG": "zh_CN.UTF-8"}, EN},
 		{"LANG zh", map[string]string{"LANG": "zh_CN.UTF-8"}, ZH},
 		{"LANG en", map[string]string{"LANG": "en_US.UTF-8"}, EN},
 		{"C locale falls back to zh", map[string]string{"LANG": "C"}, ZH},
-		{"auto defers to the locale", map[string]string{"LLM_WORKBENCH_LANG": "auto", "LANG": "en_US.UTF-8"}, EN},
 	}
 	for _, tc := range cases {
 		if got := Detect(langs(tc.values)); got != tc.want {

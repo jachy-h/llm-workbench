@@ -4,9 +4,9 @@
 
 > A local-first toolkit for controlling, inspecting and testing LLM inference.
 
-LLM Workbench 是一个本地优先的 LLM 调用代理与实验工作台，Ollama 是第一优先级 Provider。
+LLM Workbench 是一个本地优先的 LLM 调用代理与实验工作台。当前支持 Ollama，Provider 层可继续扩展。
 
-当前的代理部分源自 `ollama-nothink-proxy`，默认行为保持不变：
+当前的代理默认行为：
 
 - 对 `/v1/chat/completions` 强制 `reasoning_effort: "none"`，删除 `think`；
 - 对 `/api/chat` 强制 `think: false`；
@@ -48,8 +48,8 @@ Windows 同理：SmartScreen 提示时选「更多信息 → 仍要运行」。
 ## 快速开始
 
 ```bash
-./llm-workbench                    # 后台运行并打开控制台
-./llm-workbench -f --no-browser    # 前台运行
+./llm-workbench                    # 后台运行并打开代理页面
+./llm-workbench stop               # 停止正在运行的实例
 ./llm-workbench restart            # 重启当前实例
 ```
 
@@ -65,50 +65,23 @@ Ollama 原生接口同样可用：
 http://127.0.0.1:11500/api/chat
 ```
 
-默认监听 `127.0.0.1:11500`，默认上游 `http://127.0.0.1:11434`。
+默认监听 `127.0.0.1:11500`，默认上游 `http://127.0.0.1:11434`。监听端口不会用 11434：那个端口是 Ollama 的。
 
-## 从 ollama-nothink-proxy 迁移
+## 代理
 
-v0.3.0 完成了产品改名。API、CLI 参数、配置键和默认代理行为不变，变化的是二进制名、module path、配置/日志目录和 LaunchAgent label。
+代理页面在 <http://127.0.0.1:11500/_/llm-proxy>（仅本机访问）：
 
-旧版本用户执行一次：
-
-```bash
-llm-workbench migrate
-```
-
-它会：
-
-- 把旧配置复制到新路径，旧文件保留；
-- 检测旧 LaunchAgent，并打印卸载/重装命令；
-- 不删除旧日志，不静默操作 launchd；
-- 可重复执行，不会覆盖已存在的新配置。
-
-也可以不执行 `migrate` 直接启动：新配置不存在时会只读回退到旧配置，首次保存再写入新路径。
-
-| 项 | 旧 | 新 |
-| --- | --- | --- |
-| 二进制 | `ollama-nothink-proxy` | `llm-workbench` |
-| module | `github.com/jachy-h/ollama-nothink-proxy` | `github.com/jachy-h/llm-workbench` |
-| macOS 配置 | `~/Library/Application Support/ollama-nothink-proxy/config.json` | `~/Library/Application Support/llm-workbench/config.json` |
-| macOS 日志 | `~/Library/Logs/ollama-nothink-proxy.log` | `~/Library/Logs/llm-workbench.log` |
-| LaunchAgent | `com.github.ollama-nothink-proxy` | `com.github.llm-workbench` |
-
-`ONP_LANG` 继续作为 `LLM_WORKBENCH_LANG` 的兼容别名。
-
-## 控制台
-
-旧控制台仍在 <http://127.0.0.1:11500/__portal>（仅本机访问）：
-
-- 上游地址、超时、注入参数、语言；
-- macOS 登录自启；
+- 上游地址、超时、注入参数、并发与请求体上限；
+- thinking、System Prompt、Profile；
+- 请求历史（开关、正文、正文上限、保留天数、条数、数据库路径）；
+- 语言、macOS 登录自启；
 - 最近 100 条请求日志。
 
-旧 `/__portal` 在 v1.0 保留。
+除启动项（`--host`、`--port`、`--config`、`--log`、`--db`）外，全部配置都在代理页面上完成。顶部导航与请求、试验场、实验同级；中英文切换由所有页面共用，并保存在浏览器里。
 
 ## Inspector（请求历史）
 
-打开 <http://127.0.0.1:11500/__workbench/>：
+打开 <http://127.0.0.1:11500/_/workbench/>：
 
 - 请求列表：时间、模型、endpoint、状态、耗时、TTFT、tokens、stream；
 - 详情：原始请求、实际转发请求、原始响应、错误、System Prompt；
@@ -120,17 +93,12 @@ llm-workbench migrate
 隐私默认值：
 
 - 透明代理**只记录元数据**，不落盘请求/响应正文；
-- 需要检查正文时加 `--capture-bodies`；
+- 在代理页面打开「保存请求/响应正文」即可检查正文；
 - Playground / Experiments 自己发起的调用（Phase 2b+）默认记录正文；
 - 敏感 JSON 键（`api_key`、`authorization`、`token`、`password`、`secret` 等）在落库前脱敏；
 - 不记录 Authorization / Cookie 等请求头。
 
-```bash
-./llm-workbench --capture-bodies          # 记录正文
-./llm-workbench --no-inspector            # 完全关闭历史
-./llm-workbench --db /path/workbench.db   # 指定数据库
-./llm-workbench --retention-days 7 --max-rows 2000
-```
+历史设置的开关、正文捕获、正文上限、保留天数、条数和数据库路径都在代理页面；改动后重启生效。`--db` 仍可作为启动项覆盖数据库路径。
 
 数据库默认路径：
 
@@ -142,7 +110,7 @@ Windows: %LOCALAPPDATA%\llm-workbench\workbench.db
 
 ## Playground
 
-同一页面顶部切到 **Playground**，或直接打开 <http://127.0.0.1:11500/__workbench/>：
+同一页面顶部切到 **Playground**，或直接打开 <http://127.0.0.1:11500/_/workbench/>：
 
 - Provider / Model 选择；
 - System Prompt 编辑器；
@@ -155,7 +123,7 @@ Windows: %LOCALAPPDATA%\llm-workbench\workbench.db
 - 一键跳到 Inspector 查看本次请求；
 - 保存 / 更新 / 删除 / 加载 Prompt（SQLite）。
 
-Playground 的每次调用都会写入 Inspector（`source=playground`），并且**默认记录正文**，即使透明代理的 `capture_bodies=false`。如果启动了 `--no-inspector`，则不记录。
+Playground 的每次调用都会写入 Inspector（`source=playground`），并且**默认记录正文**，即使透明代理关闭了正文捕获。在代理页面关闭历史记录即可禁用。
 
 ## Experiments
 
@@ -180,11 +148,11 @@ Playground 的每次调用都会写入 Inspector（`source=playground`），并�
 ```text
 客户端 body 显式字段
   > 请求级 profile（完整快照，X-Workbench-Profile）
-  > 启动时选中的 profile / 全局 params
-      （CLI --set > PROXY_PARAMS > 配置文件 params > 内置默认）
+  > 启动时选中的 profile / 全局设置
+      （CLI --set > 配置文件 > 内置默认）
 ```
 
-`--set` 会覆盖启动时选中的 profile 参数；请求头选择的 profile 是一份独立快照，不叠加全局 `--set`。客户端显式字段永远最高。
+`--set` 会覆盖启动时选中的 profile 和配置文件；请求头选择的 profile 是一份独立快照，不叠加全局 `--set`。客户端显式字段永远最高。
 
 默认注入参数：`temperature=0.2`、`top_p=0.9`、`max_tokens=96`、`keep_alive="30m"`。
 
@@ -196,9 +164,7 @@ Playground 的每次调用都会写入 Inspector（`source=playground`），并�
 | `on` | 不再强制 `none`，保留客户端 level | 强制 `think:true` |
 | `passthrough` | 完全不碰这两个字段 | 完全不碰这两个字段 |
 
-```bash
-llm-workbench --thinking passthrough
-```
+在代理页面选择模式（Thinking 模式），即时生效。
 
 ### System Prompt
 
@@ -208,11 +174,7 @@ llm-workbench --thinking passthrough
 | `inject-if-missing` | 没有 system/developer 消息时插入一条 |
 | `override` | 删除已有 system/developer，替换为配置内容 |
 
-```bash
-llm-workbench --system-prompt "You are a terse assistant."
-llm-workbench --system-prompt-file ./prompt.txt
-llm-workbench --system-prompt "..." --system-prompt-override
-```
+在代理页面设置模式和文本，即时生效。
 
 ### Profile
 
@@ -222,9 +184,7 @@ Profile 是一组可复用的 thinking / System Prompt / 参数。内置：
 - `raw`：不注入参数、thinking 透传；
 - `thinking`：thinking 打开、不注入参数。
 
-```bash
-llm-workbench --profile raw
-```
+在代理页面编辑 profiles JSON 并选择默认 profile。
 
 请求级选择（只对 chat 路径生效，头不会转发给上游）：
 
@@ -241,7 +201,7 @@ curl http://127.0.0.1:11500/v1/chat/completions \
 X-Workbench-Thinking: off | on | passthrough
 ```
 
-配置文件示例（由控制台或手工维护）：
+配置文件示例（由代理页面或手工维护）：
 
 ```json
 {
@@ -273,6 +233,8 @@ X-Workbench-Thinking: off | on | passthrough
     "max_rows": 5000
   },
   "storage": {"path": "/Users/you/Library/Application Support/llm-workbench/workbench.db"},
+  "max_concurrent": 8,
+  "max_body_size": 1048576,
   "lang": "zh"
 }
 ```
@@ -280,11 +242,14 @@ X-Workbench-Thinking: off | on | passthrough
 配置文件路径：
 
 ```text
-macOS:      ~/Library/Application Support/llm-workbench/config.json
-其它系统:    ~/.config/llm-workbench/config.json
+所有系统:  ~/.config/llm-workbench/config.jsonc   （设置了 XDG_CONFIG_HOME 时优先用它）
 ```
 
-只有 `host` / `port` 改完需要 `./llm-workbench restart`，其他设置即时生效。
+文件是 JSONC：允许 `//`、`/* */` 注释和尾逗号，保存时写回纯 JSON。旧版本把它放在 `~/Library/Application Support/llm-workbench/config.json`（macOS）或 `~/.config/llm-workbench/config.json`，改名之前还在 `ollama-nothink-proxy` 目录下；升级后第一次启动会自动导入找到的第一个，顺手修掉不能用的监听端口，原文件保留为 `config.json.bak`。
+
+监听端口必须是代理自己能占住的，所以永远不会是 11434：配置里的 `"port": 11434`（或与 upstream 相同的端口）会被改成 11500 并写回一次；显式 `--port 11434` 同样会被纠正，并在启动时提示。
+
+上游、超时、参数、thinking、System Prompt、profile、语言和请求历史捕获即时生效；`host`、`port`、数据库路径、并发和请求体上限在 `./llm-workbench restart` 后生效。
 
 ## CLI
 
@@ -294,33 +259,23 @@ llm-workbench [<command>] [<options>]
 
 | 命令 | 行为 |
 | --- | --- |
-| （无）/ `serve` / `start` | 启动代理：默认后台运行并打开控制台，`-f` 前台运行 |
+| （无）/ `start` | 启动代理：默认后台运行并打开代理页面 |
+| `stop` | 停止正在运行的实例（没有实例时也算成功） |
 | `restart` | 停掉当前实例，再用本命令的参数启动 |
-| `migrate` | 从旧 `ollama-nothink-proxy` 配置迁移 |
 
-| 选项 / 变量 | 配置文件键 | 默认值 |
+| 选项 | 配置文件键 | 默认值 |
 | --- | --- | --- |
 | `--host` | `host` | `127.0.0.1` |
-| `--port`、`PORT` | `port` | `11500` |
-| `--upstream`、`UPSTREAM` | `upstream` | `http://127.0.0.1:11434` |
-| `--timeout` | `timeout` | `600` 秒 |
+| `--port` | `port` | `11500` |
 | `--set KEY=VALUE`（可重复） | `params` | 见上 |
-| `PROXY_PARAMS` | `params` | — |
-| `--no-defaults` | — | `false` |
-| `--thinking` | `thinking` | `off` |
-| `--system-prompt` / `--system-prompt-file` | `system_prompt` | off |
-| `--system-prompt-override` | `system_prompt.mode` | `false` |
-| `--profile` | `profile` | — |
-| `--no-inspector` | `inspector.enabled` | `false`（即默认开启历史） |
-| `--capture-bodies` | `inspector.capture_bodies` | `false` |
+| `--config` | — | 平台默认路径 |
+| `--log` | — | 平台默认路径 |
 | `--db` | `storage.path` | 平台默认路径 |
-| `--retention-days` | `inspector.retention_days` | `14` |
-| `--max-rows` | `inspector.max_rows` | `5000` |
-| `--max-concurrent` | — | `8` |
-| `--max-body-size` | — | `1048576` |
-| `--lang`、`LLM_WORKBENCH_LANG`、`ONP_LANG` | `lang` | `auto` |
-| `--config` / `--log` | — | 平台默认路径 |
-| `-v`、`-f`、`--no-browser`、`--version` | — | — |
+| `-v`、`--version` | — | — |
+
+其余全部在代理页面配置。没有任何环境变量设置。
+
+从 0.6.0 升级：已经安装的 LaunchAgent 仍会传入已删除的参数，升级后请重新打开一次「开机自动启动」开关，否则 launchd 会反复拉起一个立即退出的进程。
 
 ## 架构
 
@@ -337,7 +292,7 @@ Playground/Experiments（Phase 2+）──► engine ──► provider/ollama �
 - `internal/engine`：语义调用编排、请求 ID、TTFT；
 - `internal/inspector`：捕获、脱敏、TTFT、异步写入；
 - `internal/storage`：SQLite 迁移、查询、保留策略；
-- `internal/workbench`：`/__workbench` API、Playground / Experiments 与 React UI；
+- `internal/workbench`：`/_/workbench` API、Playground / Experiments 与 React UI；
 - `internal/experiments`：variant × case 批量执行、取消、评分；
 - `internal/proxy`：兼容平面，只做明确配置的改写。
 
@@ -359,7 +314,7 @@ make dist      # 跨平台产物
 
 ## 路线图
 
-- **Phase 1**：改名迁移、policy、Ollama Provider、Engine。
+- **Phase 1**：代理基础、policy、Ollama Provider、Engine。
 - **Phase 2a**：SQLite + Inspector（请求历史、详情、导出、脱敏）。
 - **Phase 2b**：Playground（流式输出、System Prompt、参数、原始请求/响应）。
 - **Phase 3（当前）**：Experiments（Prompt A/B、多模型、参数对比、批量、评分）。

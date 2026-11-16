@@ -51,7 +51,7 @@ func call(handler *Handler, method, target, body string) *httptest.ResponseRecor
 
 func TestServesUI(t *testing.T) {
 	handler, _ := newTestHandler(t)
-	rec := call(handler, http.MethodGet, "/__workbench/", "")
+	rec := call(handler, http.MethodGet, "/_/workbench/", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -62,7 +62,7 @@ func TestServesUI(t *testing.T) {
 		t.Errorf("cache-control = %q", got)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/__workbench", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_/workbench", nil)
 	req.RemoteAddr = "127.0.0.1:5555"
 	req.Host = "127.0.0.1:11500"
 	rec = httptest.NewRecorder()
@@ -74,7 +74,7 @@ func TestServesUI(t *testing.T) {
 
 func TestHealthAndListAndDetail(t *testing.T) {
 	handler, _ := newTestHandler(t)
-	rec := call(handler, http.MethodGet, "/__workbench/api/health", "")
+	rec := call(handler, http.MethodGet, "/_/workbench/api/health", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("health status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -87,7 +87,7 @@ func TestHealthAndListAndDetail(t *testing.T) {
 		t.Errorf("health storage = %v", storageState)
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/requests?limit=1", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/requests?limit=1", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -107,7 +107,7 @@ func TestHealthAndListAndDetail(t *testing.T) {
 		t.Error("list response leaked bodies")
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/requests?provider=ollama&status=500", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/requests?provider=ollama&status=500", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("filter status = %d", rec.Code)
 	}
@@ -118,7 +118,7 @@ func TestHealthAndListAndDetail(t *testing.T) {
 		t.Errorf("filter = %+v", list)
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/requests/req_a", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/requests/req_a", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("detail status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -133,7 +133,7 @@ func TestHealthAndListAndDetail(t *testing.T) {
 		t.Errorf("system prompt = %v", detail["system_prompt"])
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/requests/missing", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/requests/missing", "")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("missing status = %d", rec.Code)
 	}
@@ -141,7 +141,7 @@ func TestHealthAndListAndDetail(t *testing.T) {
 
 func TestExportFormats(t *testing.T) {
 	handler, _ := newTestHandler(t)
-	rec := call(handler, http.MethodGet, "/__workbench/api/requests/export?format=jsonl", "")
+	rec := call(handler, http.MethodGet, "/_/workbench/api/requests/export?format=jsonl", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"req_a"`) {
 		t.Errorf("jsonl = %d %s", rec.Code, rec.Body.String())
 	}
@@ -149,12 +149,12 @@ func TestExportFormats(t *testing.T) {
 		t.Errorf("jsonl content-type = %q", ct)
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/requests/export?format=csv", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/requests/export?format=csv", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "id,created_at") {
 		t.Errorf("csv = %d %s", rec.Code, rec.Body.String())
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/requests/req_a/export", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/requests/req_a/export", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "reasoning_effort") {
 		t.Errorf("single export = %d %s", rec.Code, rec.Body.String())
 	}
@@ -162,23 +162,23 @@ func TestExportFormats(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	handler, store := newTestHandler(t)
-	rec := call(handler, http.MethodDelete, "/__workbench/api/requests/req_a", "")
+	rec := call(handler, http.MethodDelete, "/_/workbench/api/requests/req_a", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d: %s", rec.Code, rec.Body.String())
 	}
 	if _, err := store.Get(context.Background(), "req_a"); err != storage.ErrNotFound {
 		t.Errorf("record survived: %v", err)
 	}
-	rec = call(handler, http.MethodDelete, "/__workbench/api/requests/req_a", "")
+	rec = call(handler, http.MethodDelete, "/_/workbench/api/requests/req_a", "")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("second delete status = %d", rec.Code)
 	}
 	// A filtered delete is allowed, but a blanket one needs all=true.
-	rec = call(handler, http.MethodDelete, "/__workbench/api/requests", "")
+	rec = call(handler, http.MethodDelete, "/_/workbench/api/requests", "")
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("blanket delete status = %d", rec.Code)
 	}
-	rec = call(handler, http.MethodDelete, "/__workbench/api/requests?all=true", "")
+	rec = call(handler, http.MethodDelete, "/_/workbench/api/requests?all=true", "")
 	if rec.Code != http.StatusOK {
 		t.Errorf("all delete status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -186,7 +186,7 @@ func TestDelete(t *testing.T) {
 
 func TestRejectsHostAndOrigin(t *testing.T) {
 	handler, _ := newTestHandler(t)
-	req := httptest.NewRequest(http.MethodGet, "/__workbench/api/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_/workbench/api/health", nil)
 	req.RemoteAddr = "127.0.0.1:5555"
 	req.Host = "evil.example"
 	rec := httptest.NewRecorder()
@@ -195,7 +195,7 @@ func TestRejectsHostAndOrigin(t *testing.T) {
 		t.Errorf("bad host status = %d", rec.Code)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/__workbench/api/requests", nil)
+	req = httptest.NewRequest(http.MethodPost, "/_/workbench/api/requests", nil)
 	req.RemoteAddr = "127.0.0.1:5555"
 	req.Host = "127.0.0.1:11500"
 	req.Header.Set("Origin", "http://evil.example")
@@ -208,11 +208,11 @@ func TestRejectsHostAndOrigin(t *testing.T) {
 
 func TestUnknownAPIAndMethod(t *testing.T) {
 	handler, _ := newTestHandler(t)
-	rec := call(handler, http.MethodGet, "/__workbench/api/nope", "")
+	rec := call(handler, http.MethodGet, "/_/workbench/api/nope", "")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown API status = %d", rec.Code)
 	}
-	rec = call(handler, http.MethodPost, "/__workbench/api/requests/req_a", "{}")
+	rec = call(handler, http.MethodPost, "/_/workbench/api/requests/req_a", "{}")
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("bad method status = %d", rec.Code)
 	}
@@ -220,11 +220,11 @@ func TestUnknownAPIAndMethod(t *testing.T) {
 
 func TestNilStoreHealthStillWorks(t *testing.T) {
 	handler := New(Options{Version: "test"})
-	rec := call(handler, http.MethodGet, "/__workbench/api/health", "")
+	rec := call(handler, http.MethodGet, "/_/workbench/api/health", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
-	rec = call(handler, http.MethodGet, "/__workbench/api/requests", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/requests", "")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("requests status = %d", rec.Code)
 	}
@@ -279,7 +279,7 @@ func newChatHandler(t *testing.T) (*Handler, *fakeProvider, *storage.Store) {
 
 func TestProvidersAndModels(t *testing.T) {
 	handler, _, _ := newChatHandler(t)
-	rec := call(handler, http.MethodGet, "/__workbench/api/providers", "")
+	rec := call(handler, http.MethodGet, "/_/workbench/api/providers", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("providers status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -294,14 +294,14 @@ func TestProvidersAndModels(t *testing.T) {
 		t.Errorf("providers = %+v", payload)
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/providers/fake/models", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/providers/fake/models", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("models status = %d: %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"id":"m"`) {
 		t.Errorf("models = %s", rec.Body.String())
 	}
-	rec = call(handler, http.MethodGet, "/__workbench/api/providers/nope/models", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/providers/nope/models", "")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown provider status = %d", rec.Code)
 	}
@@ -310,7 +310,7 @@ func TestProvidersAndModels(t *testing.T) {
 func TestChatNonStream(t *testing.T) {
 	handler, fake, _ := newChatHandler(t)
 	body := `{"model":"m","system":"be terse","messages":[{"role":"user","content":"hi"}],"params":{"temperature":0.2},"think":false}`
-	rec := call(handler, http.MethodPost, "/__workbench/api/chat", body)
+	rec := call(handler, http.MethodPost, "/_/workbench/api/chat", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("chat status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -338,7 +338,7 @@ func TestChatStreamSSE(t *testing.T) {
 		{Type: provider.EventDone, Done: true},
 	}
 	body := `{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true,"think":true}`
-	rec := call(handler, http.MethodPost, "/__workbench/api/chat", body)
+	rec := call(handler, http.MethodPost, "/_/workbench/api/chat", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("stream status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -356,7 +356,7 @@ func TestChatStreamSSE(t *testing.T) {
 func TestPromptAPI(t *testing.T) {
 	handler, _, _ := newChatHandler(t)
 	body := `{"name":"terse","system":"be terse","messages":[{"role":"user","content":"hi"}],"params":{"temperature":0.1}}`
-	rec := call(handler, http.MethodPost, "/__workbench/api/prompts", body)
+	rec := call(handler, http.MethodPost, "/_/workbench/api/prompts", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -369,20 +369,20 @@ func TestPromptAPI(t *testing.T) {
 		t.Errorf("prompt = %v", prompt)
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/prompts", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/prompts", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "terse") {
 		t.Errorf("list = %d %s", rec.Code, rec.Body.String())
 	}
 	update := `{"name":"updated","system":"x","messages":[],"params":{}}`
-	rec = call(handler, http.MethodPut, "/__workbench/api/prompts/"+id, update)
+	rec = call(handler, http.MethodPut, "/_/workbench/api/prompts/"+id, update)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "updated") {
 		t.Errorf("update = %d %s", rec.Code, rec.Body.String())
 	}
-	rec = call(handler, http.MethodDelete, "/__workbench/api/prompts/"+id, "")
+	rec = call(handler, http.MethodDelete, "/_/workbench/api/prompts/"+id, "")
 	if rec.Code != http.StatusOK {
 		t.Errorf("delete = %d %s", rec.Code, rec.Body.String())
 	}
-	rec = call(handler, http.MethodGet, "/__workbench/api/prompts/"+id, "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/prompts/"+id, "")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("get after delete = %d", rec.Code)
 	}
@@ -409,7 +409,7 @@ func TestExperimentAPI(t *testing.T) {
 		{"provider":"fake","model":"m2","system":"long","params":{"temperature":0.7}}],
 		"cases":[{"name":"greeting","messages":[{"role":"user","content":"hi"}]},
 		{"name":"code","messages":[{"role":"user","content":"code"}]}]}`
-	rec := call(handler, http.MethodPost, "/__workbench/api/experiments", body)
+	rec := call(handler, http.MethodPost, "/_/workbench/api/experiments", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body.String())
 	}
@@ -421,12 +421,12 @@ func TestExperimentAPI(t *testing.T) {
 		t.Fatalf("experiment = %+v", experiment)
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/experiments", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/experiments", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "A/B") {
 		t.Errorf("list = %d %s", rec.Code, rec.Body.String())
 	}
 
-	rec = call(handler, http.MethodPost, "/__workbench/api/experiments/"+experiment.ID+"/run", "")
+	rec = call(handler, http.MethodPost, "/_/workbench/api/experiments/"+experiment.ID+"/run", "")
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("run = %d %s", rec.Code, rec.Body.String())
 	}
@@ -447,7 +447,7 @@ func TestExperimentAPI(t *testing.T) {
 		Active bool          `json:"active"`
 	}
 	for {
-		rec = call(handler, http.MethodGet, "/__workbench/api/experiments/"+experiment.ID+"/runs?batch="+start.BatchID, "")
+		rec = call(handler, http.MethodGet, "/_/workbench/api/experiments/"+experiment.ID+"/runs?batch="+start.BatchID, "")
 		if err := json.Unmarshal(rec.Body.Bytes(), &runs); err != nil {
 			t.Fatal(err)
 		}
@@ -466,25 +466,25 @@ func TestExperimentAPI(t *testing.T) {
 	}
 
 	runID := runs.Items[0].ID
-	rec = call(handler, http.MethodPatch, "/__workbench/api/runs/"+runID, `{"rating":4,"note":"good"}`)
+	rec = call(handler, http.MethodPatch, "/_/workbench/api/runs/"+runID, `{"rating":4,"note":"good"}`)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"rating":4`) {
 		t.Errorf("rating = %d %s", rec.Code, rec.Body.String())
 	}
-	rec = call(handler, http.MethodPatch, "/__workbench/api/runs/"+runID, `{"rating":9}`)
+	rec = call(handler, http.MethodPatch, "/_/workbench/api/runs/"+runID, `{"rating":9}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("bad rating status = %d", rec.Code)
 	}
 
-	rec = call(handler, http.MethodGet, "/__workbench/api/experiments/"+experiment.ID+"/export?format=csv", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/experiments/"+experiment.ID+"/export?format=csv", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "run_id") {
 		t.Errorf("csv export = %d %s", rec.Code, rec.Body.String())
 	}
-	rec = call(handler, http.MethodGet, "/__workbench/api/experiments/"+experiment.ID+"/export?format=json", "")
+	rec = call(handler, http.MethodGet, "/_/workbench/api/experiments/"+experiment.ID+"/export?format=json", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"runs"`) {
 		t.Errorf("json export = %d %s", rec.Code, rec.Body.String())
 	}
 
-	rec = call(handler, http.MethodDelete, "/__workbench/api/experiments/"+experiment.ID, "")
+	rec = call(handler, http.MethodDelete, "/_/workbench/api/experiments/"+experiment.ID, "")
 	if rec.Code != http.StatusOK {
 		t.Errorf("delete = %d %s", rec.Code, rec.Body.String())
 	}
@@ -499,7 +499,7 @@ func TestChatValidation(t *testing.T) {
 		`{"messages":[{"role":"user","content":"hi"}]}`,
 		`not json`,
 	} {
-		rec := call(handler, http.MethodPost, "/__workbench/api/chat", body)
+		rec := call(handler, http.MethodPost, "/_/workbench/api/chat", body)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("body %q status = %d", body, rec.Code)
 		}
@@ -527,7 +527,7 @@ func TestPlaygroundCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := New(Options{Version: "test", Store: store, Engine: eng, Inspector: insp})
-	rec := call(handler, http.MethodPost, "/__workbench/api/chat",
+	rec := call(handler, http.MethodPost, "/_/workbench/api/chat",
 		`{"model":"m","system":"be terse","messages":[{"role":"user","content":"hi"}],"think":false}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("chat status = %d: %s", rec.Code, rec.Body.String())

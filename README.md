@@ -4,9 +4,9 @@ English · [中文](README.zh.md)
 
 > A local-first toolkit for controlling, inspecting and testing LLM inference.
 
-LLM Workbench is a local-first LLM proxy and experiment workbench. Ollama is the first-class provider.
+LLM Workbench is a local-first LLM proxy and experiment workbench. Ollama is supported today, and the provider layer is built for more.
 
-The proxy started life as `ollama-nothink-proxy`, and its default behavior is unchanged:
+The proxy's default behavior:
 
 - `/v1/chat/completions` forces `reasoning_effort: "none"` and removes `think`;
 - `/api/chat` forces `think: false`;
@@ -44,8 +44,8 @@ Windows behaves the same way: on the SmartScreen prompt choose "More info → Ru
 ## Quick start
 
 ```bash
-./llm-workbench                    # background, open the console
-./llm-workbench -f --no-browser    # foreground
+./llm-workbench                    # background, open the proxy page
+./llm-workbench stop               # stop the running instance
 ./llm-workbench restart            # restart the running instance
 ```
 
@@ -61,37 +61,17 @@ Ollama's native API works too:
 http://127.0.0.1:11500/api/chat
 ```
 
-Defaults: listen on `127.0.0.1:11500`, upstream `http://127.0.0.1:11434`.
+Defaults: listen on `127.0.0.1:11500`, upstream `http://127.0.0.1:11434`. The listen port is never 11434 — that one belongs to Ollama.
 
-## Migrating from ollama-nothink-proxy
+## Proxy
 
-v0.3.0 renames the project. API paths, CLI flags, config keys and default proxy behavior are unchanged; the binary name, module path, config/log directories and LaunchAgent label changed.
+The proxy page is at <http://127.0.0.1:11500/_/llm-proxy> (loopback only): upstream, timeout, injected params, concurrency and body limits, thinking, system prompts, profiles, request-history settings, database path, language, macOS autostart and the last 100 request log lines. The top bar links to Requests, Playground and Experiments; the language toggle is shared by all pages and remembered in the browser.
 
-Run this once:
-
-```bash
-llm-workbench migrate
-```
-
-It copies the old config to the new location, keeps the old file, reports a legacy LaunchAgent (without touching launchd), and is safe to run repeatedly. Starting without `migrate` also works: when the new config is missing, the old file is read as a fallback, and the first save writes the new path.
-
-| Item | Old | New |
-| --- | --- | --- |
-| Binary | `ollama-nothink-proxy` | `llm-workbench` |
-| Module | `github.com/jachy-h/ollama-nothink-proxy` | `github.com/jachy-h/llm-workbench` |
-| macOS config | `~/Library/Application Support/ollama-nothink-proxy/config.json` | `~/Library/Application Support/llm-workbench/config.json` |
-| macOS log | `~/Library/Logs/ollama-nothink-proxy.log` | `~/Library/Logs/llm-workbench.log` |
-| LaunchAgent | `com.github.ollama-nothink-proxy` | `com.github.llm-workbench` |
-
-`ONP_LANG` remains a compatibility alias for `LLM_WORKBENCH_LANG`.
-
-## Console
-
-The old console is still at <http://127.0.0.1:11500/__portal> (loopback only): upstream, timeout, injected params, language, macOS autostart and the last 100 request log lines. `/__portal` stays through v1.0.
+Everything except the bootstrap paths (`--host`, `--port`, `--config`, `--log`, `--db`) is configured on this page.
 
 ## Inspector (request history)
 
-Open <http://127.0.0.1:11500/__workbench/>:
+Open <http://127.0.0.1:11500/_/workbench/>:
 
 - list: time, model, endpoint, status, latency, TTFT, tokens, stream;
 - detail: original request, forwarded request, raw response, error, system prompt;
@@ -103,17 +83,12 @@ Open <http://127.0.0.1:11500/__workbench/>:
 Privacy defaults:
 
 - the transparent proxy records **metadata only**; request/response bodies are not persisted;
-- add `--capture-bodies` to inspect bodies;
+- turn on **Persist request/response bodies** on the proxy page to inspect bodies;
 - Playground / Experiments calls (Phase 2b+) record bodies by default;
 - sensitive JSON keys (`api_key`, `authorization`, `token`, `password`, `secret`, ...) are redacted before storage;
 - Authorization / Cookie headers are never stored.
 
-```bash
-./llm-workbench --capture-bodies          # record bodies
-./llm-workbench --no-inspector            # disable history
-./llm-workbench --db /path/workbench.db   # custom database
-./llm-workbench --retention-days 7 --max-rows 2000
-```
+History settings (enabled, body capture, body size, retention days, max rows and the database path) are on the proxy page; they take effect after a restart. `--db` is still available as a bootstrap override.
 
 ```text
 macOS:   ~/Library/Application Support/llm-workbench/workbench.db
@@ -123,7 +98,7 @@ Windows: %LOCALAPPDATA%\llm-workbench\workbench.db
 
 ## Playground
 
-Switch to **Playground** in the top bar, or open <http://127.0.0.1:11500/__workbench/>:
+Switch to **Playground** in the top bar, or open <http://127.0.0.1:11500/_/workbench/>:
 
 - provider / model selection;
 - system prompt editor;
@@ -136,7 +111,7 @@ Switch to **Playground** in the top bar, or open <http://127.0.0.1:11500/__workb
 - jump to Inspector for the same request;
 - save / update / delete / load prompts (SQLite).
 
-Every playground call is recorded in Inspector (`source=playground`) and records its bodies by default, even when the transparent proxy has `capture_bodies=false`. `--no-inspector` disables it.
+Every playground call is recorded in Inspector (`source=playground`) and records its bodies by default, even when the transparent proxy has body capture off. Turning history off on the proxy page disables it.
 
 ## Experiments
 
@@ -161,11 +136,11 @@ Precedence:
 ```text
 client body field
   > request profile (full snapshot, X-Workbench-Profile)
-  > startup profile / global params
-      (CLI --set > PROXY_PARAMS > config file params > built-in defaults)
+  > startup profile / global settings
+      (CLI --set > config file > built-in defaults)
 ```
 
-`--set` overlays the startup profile; a request-header profile is an independent snapshot and does not inherit global `--set`. An explicit client field always wins.
+`--set` overlays the startup profile and the config file; a request-header profile is an independent snapshot and does not inherit global `--set`. An explicit client field always wins.
 
 Built-in params: `temperature=0.2`, `top_p=0.9`, `max_tokens=96`, `keep_alive="30m"`.
 
@@ -177,9 +152,7 @@ Built-in params: `temperature=0.2`, `top_p=0.9`, `max_tokens=96`, `keep_alive="3
 | `on` | stop forcing `none`; keep the client's level | force `think:true` |
 | `passthrough` | leave both fields alone | leave both fields alone |
 
-```bash
-llm-workbench --thinking passthrough
-```
+Set the mode on the proxy page (**Thinking mode**); it applies immediately.
 
 ### System Prompt
 
@@ -189,11 +162,7 @@ llm-workbench --thinking passthrough
 | `inject-if-missing` | prepend a system message only when none exists |
 | `override` | remove existing system/developer messages and replace them |
 
-```bash
-llm-workbench --system-prompt "You are a terse assistant."
-llm-workbench --system-prompt-file ./prompt.txt
-llm-workbench --system-prompt "..." --system-prompt-override
-```
+Configure the mode and text on the proxy page; both apply immediately.
 
 ### Profiles
 
@@ -203,9 +172,7 @@ A profile is a reusable bundle of thinking / system prompt / params. Built-ins:
 - `raw`: no params, thinking passthrough;
 - `thinking`: thinking on, no params.
 
-```bash
-llm-workbench --profile raw
-```
+Edit the profiles JSON and pick a default profile on the proxy page.
 
 Select a profile per request on chat paths (the header is stripped before forwarding):
 
@@ -254,6 +221,8 @@ Config example:
     "max_rows": 5000
   },
   "storage": {"path": "/Users/you/Library/Application Support/llm-workbench/workbench.db"},
+  "max_concurrent": 8,
+  "max_body_size": 1048576,
   "lang": "en"
 }
 ```
@@ -261,11 +230,14 @@ Config example:
 Paths:
 
 ```text
-macOS:        ~/Library/Application Support/llm-workbench/config.json
-other systems: ~/.config/llm-workbench/config.json
+all platforms: ~/.config/llm-workbench/config.jsonc   (XDG_CONFIG_HOME wins when set)
 ```
 
-Only `host` / `port` need `./llm-workbench restart`; everything else is live.
+The file is JSONC: `//` and `/* */` comments and trailing commas are accepted, and it is written back as plain JSON. The same document lived at `~/Library/Application Support/llm-workbench/config.json` (macOS) or `~/.config/llm-workbench/config.json` in older releases, and before the rename in `ollama-nothink-proxy`; the first start after upgrading imports the first one it finds, corrects an unusable listen port, and keeps the original next to it as `config.json.bak`.
+
+The listen port needs to be free for the proxy, so it is never 11434: a stored `"port": 11434` (or a port equal to the upstream's) is replaced with 11500 and written back once. An explicit `--port 11434` is corrected the same way and reported at startup.
+
+Upstream, timeout, params, thinking, system prompt, profiles, language and request-history capture apply live. `host`, `port`, the database path, concurrency and body-size limits take effect after `./llm-workbench restart`.
 
 ## CLI
 
@@ -275,33 +247,23 @@ llm-workbench [<command>] [<options>]
 
 | Command | Behavior |
 | --- | --- |
-| (none) / `serve` / `start` | start the proxy; background by default and opens the console, `-f` for foreground |
+| (none) / `start` | start the proxy; background by default and opens the proxy page |
+| `stop` | stop the running instance (idempotent) |
 | `restart` | stop the running instance and start again with these flags |
-| `migrate` | copy the old `ollama-nothink-proxy` config |
 
-| Flag / variable | Config key | Default |
+| Flag | Config key | Default |
 | --- | --- | --- |
 | `--host` | `host` | `127.0.0.1` |
-| `--port`, `PORT` | `port` | `11500` |
-| `--upstream`, `UPSTREAM` | `upstream` | `http://127.0.0.1:11434` |
-| `--timeout` | `timeout` | `600` seconds |
+| `--port` | `port` | `11500` |
 | `--set KEY=VALUE` (repeatable) | `params` | see above |
-| `PROXY_PARAMS` | `params` | — |
-| `--no-defaults` | — | `false` |
-| `--thinking` | `thinking` | `off` |
-| `--system-prompt` / `--system-prompt-file` | `system_prompt` | off |
-| `--system-prompt-override` | `system_prompt.mode` | `false` |
-| `--profile` | `profile` | — |
-| `--no-inspector` | `inspector.enabled` | `false` (history is on by default) |
-| `--capture-bodies` | `inspector.capture_bodies` | `false` |
+| `--config` | — | platform path |
+| `--log` | — | platform path |
 | `--db` | `storage.path` | platform path |
-| `--retention-days` | `inspector.retention_days` | `14` |
-| `--max-rows` | `inspector.max_rows` | `5000` |
-| `--max-concurrent` | — | `8` |
-| `--max-body-size` | — | `1048576` |
-| `--lang`, `LLM_WORKBENCH_LANG`, `ONP_LANG` | `lang` | `auto` |
-| `--config` / `--log` | — | platform paths |
-| `-v`, `-f`, `--no-browser`, `--version` | — | — |
+| `-v`, `--version` | — | — |
+
+Everything else is on the proxy page. There are no environment-variable settings.
+
+Upgrading from 0.6.0: an already installed LaunchAgent still passes the removed flags, so re-open the autostart switch on the proxy page after upgrading (otherwise launchd restarts a process that exits immediately).
 
 ## Architecture
 
@@ -318,7 +280,7 @@ Playground/Experiments (Phase 2+) ──► engine ──► provider/ollama ─
 - `internal/engine`: semantic call orchestration, request IDs, TTFT;
 - `internal/inspector`: capture, redaction, TTFT, async writes;
 - `internal/storage`: SQLite migrations, queries, retention;
-- `internal/workbench`: `/__workbench` API, Playground / Experiments and React UI;
+- `internal/workbench`: `/_/workbench` API, Playground / Experiments and React UI;
 - `internal/experiments`: variant × case batches, cancellation, ratings;
 - `internal/proxy`: compatibility plane; only explicit policy rewrites.
 
@@ -340,7 +302,7 @@ Planning and progress:
 
 ## Roadmap
 
-- **Phase 1**: rename/migration, policy, Ollama provider, engine.
+- **Phase 1**: proxy foundation, policy, Ollama provider, engine.
 - **Phase 2a**: SQLite + Inspector (history, details, export, redaction).
 - **Phase 2b**: Playground (streaming, system prompt, params, raw request/response).
 - **Phase 3 (current)**: Experiments (prompt A/B, multi-model, parameter comparison, batches, ratings).

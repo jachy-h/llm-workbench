@@ -25,7 +25,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := h.now()
 
 	if !validRequestPath(r) {
-		h.logLine(r, notePass, http.StatusBadRequest, i18n.T("proxy.errInvalidPath"), 0, h.now().Sub(start))
+		h.logLine(r, notePass, http.StatusBadRequest, i18n.T("proxy.errInvalidPath"))
 		writeJSONError(w, http.StatusBadRequest, i18n.T("proxy.errInvalidPath"))
 		return
 	}
@@ -37,7 +37,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		h.logLine(r, noteBusy, http.StatusServiceUnavailable, i18n.T("proxy.errBusy"), 0, h.now().Sub(start))
+		h.logLine(r, noteBusy, http.StatusServiceUnavailable, i18n.T("proxy.errBusy"))
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, i18n.T("proxy.errBusy"))
 		return
@@ -66,7 +66,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				st.capture.Status = status
 				st.capture.Error = message
 			}
-			h.logLine(r, st.note, status, message, 0, h.now().Sub(start))
+			h.logLine(r, st.note, status, message)
 			writeJSONError(w, status, message)
 			return
 		}
@@ -87,7 +87,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if st.err != nil {
 			detail = st.err.Error()
 		}
-		h.logLine(r, st.note, status, detail, sw.written, h.now().Sub(start))
+		h.logLine(r, st.note, status, detail)
 	}()
 
 	h.rp.ServeHTTP(sw, r)
@@ -232,46 +232,13 @@ func setRequestBody(r *http.Request, data []byte) {
 	}
 }
 
-// logLine records one request with the structured logger and (with -v)
-// prints the same line to the console. Client IPs are logged; bodies, headers
-// and tokens never are.
-func (h *Handler) logLine(r *http.Request, note string, status int, detail string, written int64, dur time.Duration) {
-	client := clientIP(r)
-	if h.opts.Recorder != nil {
-		h.opts.Recorder.WriteRequest(r.Method, r.URL.RequestURI(), status, note, client, detail)
-	}
-	if !h.opts.Verbose || h.opts.Console == nil {
+// logLine records one request with the structured logger. Client IPs are
+// logged; bodies, headers and tokens never are.
+func (h *Handler) logLine(r *http.Request, note string, status int, detail string) {
+	if h.opts.Recorder == nil {
 		return
 	}
-
-	var b strings.Builder
-	b.WriteString(h.now().Format(time.RFC3339))
-	b.WriteByte(' ')
-	b.WriteString(client)
-	b.WriteByte(' ')
-	b.WriteString(r.Method)
-	b.WriteByte(' ')
-	b.WriteString(r.URL.RequestURI())
-	b.WriteString(" -> ")
-	b.WriteString(strconv.Itoa(status))
-	b.WriteString(" [")
-	b.WriteString(note)
-	b.WriteString("]")
-	if written > 0 {
-		b.WriteString(" ")
-		b.WriteString(strconv.FormatInt(written, 10))
-		b.WriteString("B")
-	}
-	if dur > 0 {
-		b.WriteString(" ")
-		b.WriteString(dur.Round(time.Millisecond).String())
-	}
-	if detail != "" {
-		b.WriteString(" ")
-		b.WriteString(detail)
-	}
-	b.WriteByte('\n')
-	_, _ = io.WriteString(h.opts.Console, b.String())
+	h.opts.Recorder.WriteRequest(r.Method, r.URL.RequestURI(), status, note, clientIP(r), detail)
 }
 
 func clientIP(r *http.Request) string {

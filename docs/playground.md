@@ -1,10 +1,10 @@
 # Playground
 
-Playground 是 `/__workbench` 的调试界面，走语义 Engine，不复用透明代理路径。
+Playground 是 `/_/workbench` 的调试界面，走语义 Engine，不复用透明代理路径。
 
 ## 使用
 
-1. 打开 <http://127.0.0.1:11500/__workbench/>。
+1. 打开 <http://127.0.0.1:11500/_/workbench/>。
 2. 顶部切到 **Playground**。
 3. 选择 Provider / Model，编辑 System Prompt 和参数。
 4. 输入消息，`send`；流式模式下可以 `stop`。
@@ -39,14 +39,14 @@ UI 默认 `off`。
 ## API
 
 ```text
-GET  /__workbench/api/providers
-GET  /__workbench/api/providers/{id}/models
-POST /__workbench/api/chat
-GET  /__workbench/api/prompts
-POST /__workbench/api/prompts
-GET  /__workbench/api/prompts/{id}
-PUT  /__workbench/api/prompts/{id}
-DELETE /__workbench/api/prompts/{id}
+GET  /_/workbench/api/providers
+GET  /_/workbench/api/providers/{id}/models
+POST /_/workbench/api/chat
+GET  /_/workbench/api/prompts
+POST /_/workbench/api/prompts
+GET  /_/workbench/api/prompts/{id}
+PUT  /_/workbench/api/prompts/{id}
+DELETE /_/workbench/api/prompts/{id}
 ```
 
 `POST /api/chat`：
@@ -105,8 +105,8 @@ ID 前缀 `prm_`。只保存文本消息，不保存 images / tool calls。
 - Engine 实际发送给 Provider 的请求（`Prepared`）；
 - 原始响应（非流式为 body，流式为帧数组）；
 - TTFT、耗时、usage、状态码、错误；
-- Playground 单次捕获默认记录正文，即使透明代理 `capture_bodies=false`；
-- `--no-inspector` 时完全不记录。
+- Playground 单次捕获默认记录正文，即使透明代理关闭了正文捕获；
+- 在代理页面关闭请求历史后完全不记录。
 
 ## 限制
 

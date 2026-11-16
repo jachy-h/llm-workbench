@@ -17,7 +17,7 @@ Experiment
 
 ## 使用
 
-1. 打开 `/__workbench`，切到 **Experiments**。
+1. 打开 `/_/workbench`，切到 **Experiments**。
 2. `new` 创建实验：
    - name / notes；
    - variants：provider、model、system、params（JSON）；
@@ -32,17 +32,17 @@ Experiment
 ## API
 
 ```text
-GET    /__workbench/api/experiments
-POST   /__workbench/api/experiments
-GET    /__workbench/api/experiments/{id}
-PUT    /__workbench/api/experiments/{id}
-DELETE /__workbench/api/experiments/{id}
-POST   /__workbench/api/experiments/{id}/run
-POST   /__workbench/api/experiments/{id}/cancel
-GET    /__workbench/api/experiments/{id}/runs?batch=
-GET    /__workbench/api/experiments/{id}/export?format=json|csv
-GET    /__workbench/api/runs/{id}
-PATCH  /__workbench/api/runs/{id}
+GET    /_/workbench/api/experiments
+POST   /_/workbench/api/experiments
+GET    /_/workbench/api/experiments/{id}
+PUT    /_/workbench/api/experiments/{id}
+DELETE /_/workbench/api/experiments/{id}
+POST   /_/workbench/api/experiments/{id}/run
+POST   /_/workbench/api/experiments/{id}/cancel
+GET    /_/workbench/api/experiments/{id}/runs?batch=
+GET    /_/workbench/api/experiments/{id}/export?format=json|csv
+GET    /_/workbench/api/runs/{id}
+PATCH  /_/workbench/api/runs/{id}
 ```
 
 创建示例：
@@ -70,7 +70,7 @@ PATCH  /__workbench/api/runs/{id}
 评分：
 
 ```json
-PATCH /__workbench/api/runs/{id}
+PATCH /_/workbench/api/runs/{id}
 {"rating": 4, "note": "clear and short"}
 ```
 

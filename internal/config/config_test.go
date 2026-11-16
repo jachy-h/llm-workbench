@@ -51,11 +51,11 @@ func TestDefaults(t *testing.T) {
 	if cfg.Timeout() != DefaultTimeout {
 		t.Errorf("Timeout = %v, want %v", cfg.Timeout(), DefaultTimeout)
 	}
-	if cfg.MaxConcurrent != DefaultMaxConcurrent {
-		t.Errorf("MaxConcurrent = %d, want %d", cfg.MaxConcurrent, DefaultMaxConcurrent)
+	if cfg.MaxConcurrent() != DefaultMaxConcurrent {
+		t.Errorf("MaxConcurrent = %d, want %d", cfg.MaxConcurrent(), DefaultMaxConcurrent)
 	}
-	if cfg.MaxBodySize != DefaultMaxBodySize {
-		t.Errorf("MaxBodySize = %d, want %d", cfg.MaxBodySize, DefaultMaxBodySize)
+	if cfg.MaxBodySize() != DefaultMaxBodySize {
+		t.Errorf("MaxBodySize = %d, want %d", cfg.MaxBodySize(), DefaultMaxBodySize)
 	}
 	want := map[string]string{
 		"temperature": "0.2",
@@ -100,41 +100,41 @@ func TestSetCoercion(t *testing.T) {
 	}
 }
 
-func TestProxyParamsReplacesDefaults(t *testing.T) {
-	cfg := parse(t, tempPaths(t), map[string]string{
-		"PROXY_PARAMS": `{"temperature": 0.5, "max_tokens": 12}`,
-	})
+func TestParamsFromConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"params": {"temperature": 0.5, "max_tokens": 12}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
 	if len(cfg.Params()) != 2 {
-		t.Fatalf("Params = %v, want exactly the env object", cfg.Params())
+		t.Fatalf("Params = %v, want exactly the file object", cfg.Params())
 	}
 	if string(cfg.Params()["temperature"]) != "0.5" {
 		t.Errorf("temperature = %s", cfg.Params()["temperature"])
 	}
 }
 
-func TestProxyParamsEmptyMeansInjectNothing(t *testing.T) {
-	for _, value := range []string{"", "{}"} {
-		cfg := parse(t, tempPaths(t), map[string]string{"PROXY_PARAMS": value})
-		if len(cfg.Params()) != 0 {
-			t.Errorf("PROXY_PARAMS=%q produced %v, want empty", value, cfg.Params())
-		}
+func TestEmptyParamsFileInjectsNothing(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"params": {}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
+	if len(cfg.Params()) != 0 {
+		t.Errorf("empty params file produced %v, want empty", cfg.Params())
 	}
 }
 
-func TestParamPriorityFileEnvSet(t *testing.T) {
+func TestParamPriorityFileSet(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(cfgPath, []byte(`{"params": {"max_tokens": 12, "top_p": 0.1}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")},
-		map[string]string{"PROXY_PARAMS": `{"temperature": 0.5}`})
-	if len(cfg.Params()) != 1 || string(cfg.Params()["temperature"]) != "0.5" {
-		t.Fatalf("PROXY_PARAMS should replace file params, got %v", cfg.Params())
-	}
-
-	cfg = parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"), "--set", "max_tokens=7"}, nil)
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"), "--set", "max_tokens=7"}, nil)
 	if string(cfg.Params()["max_tokens"]) != "7" {
 		t.Errorf("--set should win over file params, got %s", cfg.Params()["max_tokens"])
 	}
@@ -143,14 +143,7 @@ func TestParamPriorityFileEnvSet(t *testing.T) {
 	}
 }
 
-func TestNoDefaults(t *testing.T) {
-	cfg := parse(t, append(tempPaths(t), "--no-defaults", "--set", "temperature=0"), nil)
-	if len(cfg.Params()) != 1 || string(cfg.Params()["temperature"]) != "0" {
-		t.Fatalf("Params = %v, want only temperature", cfg.Params())
-	}
-}
-
-func TestEnvAndCLIPrecedence(t *testing.T) {
+func TestFileAndCLIPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 	file := `{"host": "127.0.0.2", "port": 3000, "upstream": "http://file:11434", "timeout": 30, "params": {"seed": 1}}`
@@ -170,30 +163,19 @@ func TestEnvAndCLIPrecedence(t *testing.T) {
 		t.Errorf("Params = %v, want file params only", cfg.Params())
 	}
 
-	cfg = parse(t, []string{"--config", cfgPath, "--log", logPath}, map[string]string{
-		"PORT": "4000", "UPSTREAM": "http://env:11434",
-	})
-	if cfg.Port != 4000 || cfg.Upstream() != "http://env:11434" {
-		t.Errorf("env should win over file: %+v", cfg)
-	}
-
-	cfg = parse(t, []string{"--config", cfgPath, "--log", logPath, "--port", "5000", "--upstream", "http://cli:11434"}, map[string]string{
-		"PORT": "4000", "UPSTREAM": "http://env:11434",
-	})
-	if cfg.Port != 5000 || cfg.Upstream() != "http://cli:11434" {
-		t.Errorf("CLI should win over env: %+v", cfg)
-	}
-}
-
-func TestInvalidEnvPortFallsBack(t *testing.T) {
-	cfg := parse(t, tempPaths(t), map[string]string{"PORT": "not-a-port"})
-	if cfg.Port != DefaultPort {
-		t.Errorf("Port = %d, want default %d", cfg.Port, DefaultPort)
+	cfg = parse(t, []string{"--config", cfgPath, "--log", logPath, "--port", "5000", "--host", "127.0.0.3"}, nil)
+	if cfg.Port != 5000 || cfg.Host != "127.0.0.3" {
+		t.Errorf("CLI should win over the file: %+v", cfg)
 	}
 }
 
 func TestUpstreamNormalization(t *testing.T) {
-	cfg := parse(t, append(tempPaths(t), "--upstream", "http://127.0.0.1:11434/"), nil)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"upstream": "http://127.0.0.1:11434/"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
 	if cfg.Upstream() != "http://127.0.0.1:11434" {
 		t.Errorf("Upstream = %q", cfg.Upstream())
 	}
@@ -209,18 +191,11 @@ func TestErrors(t *testing.T) {
 		env  map[string]string
 	}{
 		{"set without equals", []string{"--set", "temperature"}, nil},
-		{"empty set key ok but bad value? none", []string{"--config", "/nonexistent", "--set", "=", "--upstream", "ftp://x"}, nil},
-		{"bad proxy params", nil, map[string]string{"PROXY_PARAMS": `[1,2]`}},
-		{"null proxy params", nil, map[string]string{"PROXY_PARAMS": `null`}},
-		{"ftp upstream", []string{"--upstream", "ftp://x"}, nil},
-		{"empty upstream", []string{"--upstream", "  "}, nil},
-		{"zero timeout", []string{"--timeout", "0"}, nil},
-		{"zero concurrency", []string{"--max-concurrent", "0"}, nil},
-		{"zero body size", []string{"--max-body-size", "0"}, nil},
 		{"bad port", []string{"--port", "abc"}, nil},
+		{"port out of range", []string{"--port", "70000"}, nil},
 		{"unknown flag", []string{"--nope"}, nil},
+		{"removed flag", []string{"--upstream", "http://127.0.0.1:11434"}, nil},
 		{"positional arg", []string{"extra"}, nil},
-		{"boolean flag value", []string{"--verbose=maybe"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,129 +208,193 @@ func TestErrors(t *testing.T) {
 }
 
 func TestVersionRequested(t *testing.T) {
-	if _, err := Parse([]string{"--version"}, envOf(nil)); err != ErrVersionRequested {
-		t.Fatalf("err = %v, want ErrVersionRequested", err)
+	for _, arg := range []string{"--version", "-v"} {
+		if _, err := Parse([]string{arg}, envOf(nil)); err != ErrVersionRequested {
+			t.Fatalf("%s: err = %v, want ErrVersionRequested", arg, err)
+		}
 	}
 }
 
 func TestDefaultPaths(t *testing.T) {
-	cfg := parse(t, nil, nil)
-	if !filepath.IsAbs(cfg.ConfigPath) || filepath.Base(cfg.ConfigPath) != "config.json" {
-		t.Errorf("ConfigPath = %q", cfg.ConfigPath)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	wantConfig := filepath.Join(home, ".config", "llm-workbench", "config.jsonc")
+	if got := DefaultConfigPath(); got != wantConfig {
+		t.Errorf("DefaultConfigPath() = %q, want %q", got, wantConfig)
+	}
+	if got := ConfigDir(); got != filepath.Dir(wantConfig) {
+		t.Errorf("ConfigDir() = %q", got)
+	}
+
+	cfg := parse(t, []string{"--log", filepath.Join(home, "proxy.log")}, nil)
+	if cfg.ConfigPath != wantConfig {
+		t.Errorf("ConfigPath = %q, want %q", cfg.ConfigPath, wantConfig)
+	}
+	if cfg.Port != 11500 {
+		t.Errorf("Port = %d, want 11500", cfg.Port)
 	}
 	if !filepath.IsAbs(cfg.LogPath) || filepath.Ext(cfg.LogPath) != ".log" {
 		t.Errorf("LogPath = %q", cfg.LogPath)
 	}
-	if strings.Contains(cfg.ConfigPath, LegacyDir) {
-		t.Errorf("DefaultConfigPath still uses the legacy directory: %q", cfg.ConfigPath)
+}
+
+func TestDefaultConfigPathHonoursXDG(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	want := filepath.Join(dir, "llm-workbench", "config.jsonc")
+	if got := DefaultConfigPath(); got != want {
+		t.Errorf("DefaultConfigPath() = %q, want %q", got, want)
 	}
 }
 
-func TestImportLegacyConfig(t *testing.T) {
-	t.Cleanup(func() { i18n.Set(i18n.ZH) })
+func TestConfigFileAcceptsJSONC(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+	path := filepath.Join(dir, "config.jsonc")
+	body := `{
+  // the upstream still looks like a comment to a naive stripper
+  "upstream": "http://127.0.0.1:11434", /* keeps the scheme */
+  "thinking": "on",
+  "params": {
+    // low temperature, trailing comma below is fine
+    "temperature": 0.1,
+  },
+  "profile": "raw", // trailing comma after this object is fine too
+}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, []string{"--config", path, "--log", filepath.Join(dir, "proxy.log")}, nil)
 
-	legacy := LegacyConfigPath()
+	if got := cfg.Upstream(); got != DefaultUpstream {
+		t.Errorf("Upstream = %q, want %q", got, DefaultUpstream)
+	}
+	if got := cfg.Thinking(); got != policy.ThinkingOn {
+		t.Errorf("Thinking = %q, want on", got)
+	}
+	if got := string(cfg.Params()["temperature"]); got != "0.1" {
+		t.Errorf("temperature = %q", got)
+	}
+	if got := cfg.Snapshot().Profile; got != "raw" {
+		t.Errorf("Profile = %q, want raw", got)
+	}
+}
+
+func TestMigratesLegacyConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	legacy := filepath.Join(home, "Library", "Application Support", "llm-workbench", "config.json")
+	body := `{"port": 11434, "thinking": "on", "future_key": {"a": 1}}`
 	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(legacy, []byte(`{"upstream":"http://legacy:11434","params":{"temperature":0.7},"lang":"en"}`), 0o600); err != nil {
+	if err := os.WriteFile(legacy, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Runtime parsing reads the old file when the new path is missing, but
-	// keeps writing to the new path.
-	cfg, err := ParseRuntime([]string{"--log", filepath.Join(dir, "x.log")}, envOf(nil))
-	if err != nil {
-		t.Fatalf("ParseRuntime: %v", err)
+	cfg := parse(t, []string{"--log", filepath.Join(home, "proxy.log")}, nil)
+	if cfg.MigratedFrom != legacy {
+		t.Errorf("MigratedFrom = %q, want %q", cfg.MigratedFrom, legacy)
 	}
-	if cfg.Upstream() != "http://legacy:11434" {
-		t.Errorf("legacy upstream = %q", cfg.Upstream())
+	// 11434 is Ollama's port, so the migrated listen port is corrected.
+	if cfg.Port != DefaultPort {
+		t.Errorf("Port = %d, want %d", cfg.Port, DefaultPort)
 	}
-	if cfg.Lang() != i18n.EN {
-		t.Errorf("legacy lang = %q, want en", cfg.Lang())
-	}
-	if cfg.ConfigPath != DefaultConfigPath() {
-		t.Errorf("ConfigPath = %q, want new default %q", cfg.ConfigPath, DefaultConfigPath())
-	}
-	if _, err := os.Stat(DefaultConfigPath()); !os.IsNotExist(err) {
-		t.Errorf("runtime fallback created the new config: %v", err)
+	if got := cfg.Thinking(); got != policy.ThinkingOn {
+		t.Errorf("Thinking = %q, want the migrated value", got)
 	}
 
-	dst := DefaultConfigPath()
-	result, err := ImportLegacyConfig(dst)
+	data, err := os.ReadFile(cfg.ConfigPath)
 	if err != nil {
-		t.Fatalf("ImportLegacyConfig: %v", err)
+		t.Fatalf("migrated config missing: %v", err)
 	}
-	if !result.Copied || result.Reason != "copied" {
-		t.Errorf("result = %+v, want copied", result)
+	for _, needle := range []string{`"port": 11500`, `"thinking": "on"`, `"future_key"`} {
+		if !strings.Contains(string(data), needle) {
+			t.Errorf("migrated config lacks %q:\n%s", needle, data)
+		}
+	}
+	if _, err := os.Stat(legacy + ConfigBackupSuffix); err != nil {
+		t.Errorf("legacy file not kept as backup: %v", err)
+	}
+
+	// A second start finds the new file and imports nothing.
+	again := parse(t, []string{"--log", filepath.Join(home, "proxy.log")}, nil)
+	if again.MigratedFrom != "" {
+		t.Errorf("second start migrated again from %q", again.MigratedFrom)
+	}
+}
+
+func TestExistingConfigWinsOverLegacy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	current := DefaultConfigPath()
+	legacy := filepath.Join(home, ".config", "llm-workbench", "config.json")
+	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(current, []byte(`{"lang": "en"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte(`{"lang": "zh"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := parse(t, []string{"--log", filepath.Join(home, "proxy.log")}, nil)
+	if cfg.MigratedFrom != "" {
+		t.Errorf("migrated over an existing config from %q", cfg.MigratedFrom)
+	}
+	if got := cfg.Lang(); got != i18n.EN {
+		t.Errorf("Lang = %q, want the existing en config", got)
 	}
 	if _, err := os.Stat(legacy); err != nil {
-		t.Errorf("legacy config was removed: %v", err)
-	}
-
-	// A second run must not overwrite the new file.
-	if err := os.WriteFile(dst, []byte(`{"params":{"temperature":0.1}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	result, err = ImportLegacyConfig(dst)
-	if err != nil {
-		t.Fatalf("ImportLegacyConfig second run: %v", err)
-	}
-	if result.Copied || result.Reason != "destination_exists" {
-		t.Errorf("second result = %+v, want destination_exists", result)
-	}
-	data, _ := os.ReadFile(dst)
-	if !strings.Contains(string(data), "0.1") {
-		t.Errorf("destination overwritten: %s", data)
+		t.Errorf("legacy file was touched: %v", err)
 	}
 }
 
-func TestImportLegacyConfigMissingAndBroken(t *testing.T) {
+func TestListenPortNeverCollidesWithUpstream(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
-	dst := filepath.Join(dir, "new", "config.json")
+	path := filepath.Join(dir, "config.jsonc")
+	args := []string{"--config", path, "--log", filepath.Join(dir, "proxy.log")}
 
-	result, err := ImportLegacyConfig(dst)
+	// The stored value is corrected and written back once.
+	if err := os.WriteFile(path, []byte(`{"port": 11434}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, args, nil)
+	if cfg.Port != DefaultPort {
+		t.Errorf("Port = %d, want %d", cfg.Port, DefaultPort)
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("missing source: %v", err)
-	}
-	if result.Copied || result.Reason != "source_missing" {
-		t.Errorf("result = %+v, want source_missing", result)
-	}
-
-	legacy := LegacyConfigPath()
-	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(legacy, []byte(`{"broken":`), 0o600); err != nil {
+	if !strings.Contains(string(data), `"port": 11500`) {
+		t.Errorf("corrected port was not persisted:\n%s", data)
+	}
+
+	// Listening on the upstream's own port would forward to itself.
+	if err := os.WriteFile(path, []byte(`{"port": 8080, "upstream": "http://127.0.0.1:8080"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ImportLegacyConfig(dst); err == nil {
-		t.Error("broken legacy config was copied without an error")
+	if got := parse(t, args, nil).Port; got != DefaultPort {
+		t.Errorf("Port = %d, want %d for an upstream on the same port", got, DefaultPort)
 	}
-	if _, err := os.Stat(dst); !os.IsNotExist(err) {
-		t.Errorf("broken source created the destination: %v", err)
-	}
-}
 
-func TestConfigPathFromArgs(t *testing.T) {
-	cases := map[string]struct {
-		args []string
-		want string
-	}{
-		"missing": {nil, ""},
-		"space":   {[]string{"--config", "a.json"}, "a.json"},
-		"equals":  {[]string{"--config=a.json"}, "a.json"},
-		"other":   {[]string{"--port", "1"}, ""},
+	// A flag is corrected too, but the file is left alone: the flag was the
+	// problem, not the stored value.
+	flagged := parse(t, append(args, "--port", "11434"), nil)
+	if flagged.Port != DefaultPort || flagged.PortRequested != 11434 {
+		t.Errorf("--port 11434 = %d (requested %d), want %d", flagged.Port, flagged.PortRequested, DefaultPort)
 	}
-	for name, tc := range cases {
-		if got := ConfigPathFromArgs(tc.args); got != tc.want {
-			t.Errorf("%s: ConfigPathFromArgs(%v) = %q, want %q", name, tc.args, got, tc.want)
-		}
+	// Any other port is untouched.
+	if got := parse(t, append(args, "--port", "12000"), nil).Port; got != 12000 {
+		t.Errorf("Port = %d, want 12000", got)
 	}
 }
 
@@ -386,9 +425,11 @@ func TestApplyPersistsAndUpdates(t *testing.T) {
 	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
 
 	payload := map[string]json.RawMessage{
-		"upstream": json.RawMessage(`"http://127.0.0.1:11435/"`),
-		"timeout":  json.RawMessage(`30`),
-		"params":   json.RawMessage(`{"temperature":0}`),
+		"upstream":       json.RawMessage(`"http://127.0.0.1:11435/"`),
+		"timeout":        json.RawMessage(`30`),
+		"params":         json.RawMessage(`{"temperature":0}`),
+		"max_concurrent": json.RawMessage(`3`),
+		"max_body_size":  json.RawMessage(`2048`),
 	}
 	if err := cfg.Apply(payload); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -401,6 +442,9 @@ func TestApplyPersistsAndUpdates(t *testing.T) {
 	}
 	if params := cfg.Params(); len(params) != 1 || string(params["temperature"]) != "0" {
 		t.Errorf("Params = %v", params)
+	}
+	if cfg.MaxConcurrent() != 3 || cfg.MaxBodySize() != 2048 {
+		t.Errorf("limits = %d/%d", cfg.MaxConcurrent(), cfg.MaxBodySize())
 	}
 
 	data, err := os.ReadFile(cfgPath)
@@ -419,6 +463,9 @@ func TestApplyPersistsAndUpdates(t *testing.T) {
 	}
 	if document["host"] != DefaultHost || document["port"] != float64(DefaultPort) {
 		t.Errorf("saved host/port = %v/%v", document["host"], document["port"])
+	}
+	if document["max_concurrent"] != float64(3) || document["max_body_size"] != float64(2048) {
+		t.Errorf("saved limits = %v/%v", document["max_concurrent"], document["max_body_size"])
 	}
 }
 
@@ -500,8 +547,9 @@ func TestSplitCommand(t *testing.T) {
 		{[]string{"--port", "11500"}, CommandServe, []string{"--port", "11500"}},
 		{[]string{"restart"}, CommandRestart, []string{}},
 		{[]string{"restart", "--port", "11501"}, CommandRestart, []string{"--port", "11501"}},
-		{[]string{"migrate"}, CommandMigrate, []string{}},
-		{[]string{"migrate", "--config", "x.json"}, CommandMigrate, []string{"--config", "x.json"}},
+		{[]string{"stop"}, CommandStop, []string{}},
+		{[]string{"stop", "--port", "11501"}, CommandStop, []string{"--port", "11501"}},
+		{[]string{"start", "--port", "11502"}, CommandServe, []string{"--port", "11502"}},
 		{[]string{"serve", "--port", "11502"}, CommandServe, []string{"--port", "11502"}},
 		// Unknown positionals stay put so flag parsing reports them.
 		{[]string{"bogus"}, CommandServe, []string{"bogus"}},
@@ -524,43 +572,12 @@ func TestSplitCommand(t *testing.T) {
 	}
 }
 
-func TestUsageMentionsRestart(t *testing.T) {
-	if text := UsageText(); !strings.Contains(text, "restart") || !strings.Contains(text, "migrate") {
-		t.Errorf("usage does not mention restart/migrate:\n%s", text)
-	}
-}
-
-func TestThinkingAndSystemPromptFlags(t *testing.T) {
-	cfg := parse(t, append(tempPaths(t), "--thinking", "on", "--system-prompt", "be terse"), nil)
-	resolved, ok := cfg.Policy("")
-	if !ok {
-		t.Fatal("Policy failed")
-	}
-	if resolved.Thinking != policy.ThinkingOn {
-		t.Errorf("thinking = %q", resolved.Thinking)
-	}
-	if resolved.SystemPrompt.Mode != policy.SystemPromptInjectIfMissing || resolved.SystemPrompt.Text != "be terse" {
-		t.Errorf("system prompt = %+v", resolved.SystemPrompt)
-	}
-
-	override := parse(t, append(tempPaths(t), "--system-prompt", "x", "--system-prompt-override"), nil)
-	if got := override.SystemPrompt(); got.Mode != policy.SystemPromptOverride {
-		t.Errorf("override mode = %q", got.Mode)
-	}
-}
-
-func TestSystemPromptFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "prompt.txt")
-	if err := os.WriteFile(path, []byte("from file"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := parse(t, append(tempPaths(t), "--system-prompt-file", path), nil)
-	if got := cfg.SystemPrompt(); got.Mode != policy.SystemPromptInjectIfMissing || got.Text != "from file" {
-		t.Errorf("system prompt = %+v", got)
-	}
-	if _, err := Parse(append(tempPaths(t), "--system-prompt", "x", "--system-prompt-file", path), envOf(nil)); err == nil {
-		t.Error("both system prompt flags were accepted")
+func TestUsageMentionsCommands(t *testing.T) {
+	text := UsageText()
+	for _, needle := range []string{"restart", "stop", "start"} {
+		if !strings.Contains(text, needle) {
+			t.Errorf("usage does not mention %q:\n%s", needle, text)
+		}
 	}
 }
 
@@ -594,11 +611,11 @@ func TestProfiles(t *testing.T) {
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	file := `{"profiles":{"fast":{"thinking":"off","params":{"temperature":0.1},"system_prompt":{"mode":"inject-if-missing","text":"fast"}}}}`
+	file := `{"profile":"fast","profiles":{"fast":{"thinking":"off","params":{"temperature":0.1},"system_prompt":{"mode":"inject-if-missing","text":"fast"}}}}`
 	if err := os.WriteFile(cfgPath, []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"), "--profile", "fast"}, nil)
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
 	if cfg.ActiveProfile() != "fast" {
 		t.Errorf("active profile = %q", cfg.ActiveProfile())
 	}
@@ -620,31 +637,14 @@ func TestProfiles(t *testing.T) {
 
 	// --set still wins over the selected profile.
 	withSet := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"),
-		"--profile", "fast", "--set", "temperature=0.9"}, nil)
+		"--set", "temperature=0.9"}, nil)
 	selected, _ := withSet.Policy("")
 	if string(selected.Params["temperature"]) != "0.9" {
 		t.Errorf("--set did not override profile: %v", selected.Params)
 	}
-
-	// Explicit thinking also beats the profile.
-	withThinking := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"),
-		"--profile", "raw", "--thinking", "off"}, nil)
-	selected, _ = withThinking.Policy("")
-	if selected.Thinking != policy.ThinkingOff {
-		t.Errorf("--thinking did not override profile: %q", selected.Thinking)
-	}
 }
 
 func TestInvalidPolicyConfig(t *testing.T) {
-	cases := [][]string{
-		{"--thinking", "maybe"},
-		{"--profile", "missing"},
-	}
-	for _, extra := range cases {
-		if _, err := Parse(append(tempPaths(t), extra...), envOf(nil)); err == nil {
-			t.Errorf("Parse(%v) succeeded", extra)
-		}
-	}
 	dir := t.TempDir()
 	for name, file := range map[string]string{
 		"bad thinking":        `{"thinking":"maybe"}`,
@@ -727,21 +727,21 @@ func TestInspectorAndStorageConfig(t *testing.T) {
 	if inspectorState.MaxBodyBytes != DefaultInspectorMaxBodyBytes || inspectorState.RetentionDays != DefaultRetentionDays {
 		t.Errorf("defaults = %+v", inspectorState)
 	}
-	if cfg.Storage().Path == "" || strings.Contains(cfg.Storage().Path, LegacyDir) {
+	if cfg.Storage().Path == "" {
 		t.Errorf("storage path = %q", cfg.Storage().Path)
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "custom.db")
-	cfg = parse(t, append(tempPaths(t),
-		"--no-inspector",
-		"--capture-bodies",
-		"--db", dbPath,
-		"--retention-days", "3",
-		"--max-rows", "12",
-	), nil)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	file := `{"inspector":{"enabled":false,"capture_bodies":true,"retention_days":3,"max_rows":12}}`
+	if err := os.WriteFile(cfgPath, []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg = parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"), "--db", dbPath}, nil)
 	inspectorState = cfg.Inspector()
 	if inspectorState.Enabled || !inspectorState.CaptureBodies {
-		t.Errorf("flags = %+v", inspectorState)
+		t.Errorf("file = %+v", inspectorState)
 	}
 	if inspectorState.RetentionDays != 3 || inspectorState.MaxRows != 12 {
 		t.Errorf("retention = %+v", inspectorState)
@@ -807,48 +807,29 @@ func TestLanguageResolution(t *testing.T) {
 	if got := parse(t, tempPaths(t), nil).Lang(); got != i18n.ZH {
 		t.Errorf("default Lang = %q, want zh", got)
 	}
-	if got := parse(t, tempPaths(t), map[string]string{"LLM_WORKBENCH_LANG": "en"}).Lang(); got != i18n.EN {
-		t.Errorf("LLM_WORKBENCH_LANG=en Lang = %q", got)
-	}
-	// The pre-rename variable remains a lower-priority alias.
-	if got := parse(t, tempPaths(t), map[string]string{"ONP_LANG": "en"}).Lang(); got != i18n.EN {
-		t.Errorf("ONP_LANG=en Lang = %q", got)
-	}
-	if got := parse(t, tempPaths(t), map[string]string{"LLM_WORKBENCH_LANG": "zh", "ONP_LANG": "en"}).Lang(); got != i18n.ZH {
-		t.Errorf("LLM_WORKBENCH_LANG should beat ONP_LANG, got %q", got)
-	}
 	if got := parse(t, tempPaths(t), map[string]string{"LANG": "en_US.UTF-8"}).Lang(); got != i18n.EN {
 		t.Errorf("LANG=en_US.UTF-8 Lang = %q", got)
 	}
-	// CLI beats the environment.
-	if got := parse(t, append(tempPaths(t), "--lang", "zh"),
-		map[string]string{"LLM_WORKBENCH_LANG": "en"}).Lang(); got != i18n.ZH {
-		t.Errorf("--lang zh over LLM_WORKBENCH_LANG=en = %q", got)
-	}
-	// auto defers to the locale.
-	if got := parse(t, append(tempPaths(t), "--lang", "auto"),
-		map[string]string{"LANG": "en_US.UTF-8"}).Lang(); got != i18n.EN {
-		t.Errorf("--lang auto Lang = %q", got)
+	// A language variable is no longer an input: only the locale counts.
+	if got := parse(t, tempPaths(t), map[string]string{
+		"LLM_WORKBENCH_LANG": "en", "LANG": "zh_CN.UTF-8",
+	}).Lang(); got != i18n.ZH {
+		t.Errorf("LLM_WORKBENCH_LANG should be ignored, Lang = %q", got)
 	}
 
-	// The config file is used only when no flag or variable decides.
+	// The config file wins over the locale.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte(`{"lang":"en"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	args := []string{"--config", path, "--log", filepath.Join(dir, "proxy.log")}
-	if got := parse(t, args, nil).Lang(); got != i18n.EN {
+	if got := parse(t, args, map[string]string{"LANG": "zh_CN.UTF-8"}).Lang(); got != i18n.EN {
 		t.Errorf("file lang = %q, want en", got)
 	}
-
-	// An invalid flag value is an error, and the process keeps working text.
-	if _, err := Parse(append(tempPaths(t), "--lang", "fr"), envOf(nil)); err == nil {
-		t.Error("--lang fr was accepted")
-	}
-	// The internal value must be a real language: ZH/EN only.
-	if got := parse(t, tempPaths(t), map[string]string{"LLM_WORKBENCH_LANG": "klingon"}).Lang(); got != i18n.ZH {
-		t.Errorf("unknown LLM_WORKBENCH_LANG Lang = %q, want zh", got)
+	// The stored value must be a real language; anything else falls through.
+	if got := parse(t, args, nil).Lang(); got != i18n.EN {
+		t.Errorf("file lang = %q, want en", got)
 	}
 }
 

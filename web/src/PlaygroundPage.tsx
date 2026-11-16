@@ -9,6 +9,10 @@ import {
   listProviders,
   updatePrompt,
 } from "./api";
+import SearchSelect from "./components/SearchSelect";
+import TokenUsage from "./components/TokenUsage";
+import { useI18n } from "./i18n";
+import { toModelOptions } from "./modelOptions";
 import type { ChatMessage, ChatRequest, ChatResult, ModelInfo, Prompt, ProviderInfo } from "./types";
 
 type Props = {
@@ -21,6 +25,8 @@ type Meta = {
   ttft: number;
   usage?: ChatResult["usage"];
 };
+
+type PlaygroundMessage = ChatMessage & { metrics?: Meta };
 
 const emptyMeta: Meta = { requestId: "", duration: 0, ttft: 0 };
 const defaultParams: Record<string, string> = {
@@ -48,12 +54,13 @@ function numericParams(values: Record<string, string>): Record<string, number> {
 }
 
 export default function PlaygroundPage({ onOpenRequest }: Props) {
+  const { t } = useI18n();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [providerId, setProviderId] = useState("");
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelId, setModelId] = useState("");
   const [system, setSystem] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<PlaygroundMessage[]>([]);
   const [input, setInput] = useState("");
   const [params, setParams] = useState(defaultParams);
   const [thinkMode, setThinkMode] = useState<"off" | "on" | "passthrough">("off");
@@ -103,23 +110,27 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
     }
   }
 
-  function buildRequest(nextMessages: ChatMessage[]): ChatRequest {
+  function buildRequest(nextMessages: PlaygroundMessage[]): ChatRequest {
     const think = thinkMode === "passthrough" ? null : thinkMode === "on";
     return {
       provider: providerId,
       model: modelId,
       system,
-      messages: nextMessages,
+      messages: nextMessages.map(({ role, content }) => ({ role, content })),
       params: numericParams(params),
       think,
       stream,
     };
   }
 
+  function appendAssistant(content: string, metrics?: Meta) {
+    setMessages((current) => [...current, { role: "assistant", content, metrics }]);
+  }
+
   async function send() {
     if (busy || !modelId || !input.trim()) return;
-    const userMessage: ChatMessage = { role: "user", content: input.trim() };
-    const nextMessages = [...messages, userMessage];
+    const userMessage: PlaygroundMessage = { role: "user", content: input.trim() };
+    const nextMessages: PlaygroundMessage[] = [...messages, userMessage];
     const request = buildRequest(nextMessages);
     setMessages(nextMessages);
     setInput("");
@@ -134,6 +145,7 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
     abortRef.current = controller;
     let text = "";
     let thinkingText = "";
+    let requestMeta: Meta = emptyMeta;
 
     try {
       if (stream) {
@@ -142,7 +154,11 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
           (event) => {
             switch (event.event) {
               case "meta":
-                setMeta((current) => ({ ...current, requestId: String(event.data.request_id ?? "") }));
+                requestMeta = {
+                  ...requestMeta,
+                  requestId: String(event.data.request_id ?? requestMeta.requestId),
+                };
+                setMeta(requestMeta);
                 break;
               case "delta":
                 text += String(event.data.text ?? "");
@@ -153,45 +169,48 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
                 setThinking(thinkingText);
                 break;
               case "usage":
-                setMeta((current) => ({ ...current, usage: event.data as ChatResult["usage"] }));
+                requestMeta = { ...requestMeta, usage: event.data as ChatResult["usage"] };
+                setMeta(requestMeta);
                 break;
               case "done":
-                setMeta((current) => ({
-                  ...current,
-                  requestId: String(event.data.request_id ?? current.requestId),
+                requestMeta = {
+                  ...requestMeta,
+                  requestId: String(event.data.request_id ?? requestMeta.requestId),
                   duration: Number(event.data.duration_ms ?? 0),
                   ttft: Number(event.data.ttft_ms ?? 0),
-                  usage: (event.data.usage as ChatResult["usage"]) ?? current.usage,
-                }));
+                  usage: (event.data.usage as ChatResult["usage"]) ?? requestMeta.usage,
+                };
+                setMeta(requestMeta);
                 if (event.data.raw) setRawResponse(JSON.stringify(event.data.raw, null, 2));
                 break;
               case "error":
-                setError(String(event.data.message ?? "stream failed"));
+                setError(String(event.data.message ?? t("playground.streamFailed")));
                 break;
             }
           },
           controller.signal,
         );
-        if (text) setMessages((current) => [...current, { role: "assistant", content: text }]);
+        if (text) appendAssistant(text, requestMeta);
         setOutput("");
       } else {
         const result = await chat(request, controller.signal);
         text = result.text;
-        setThinking(result.thinking);
-        setMeta({
+        requestMeta = {
           requestId: result.request_id,
           duration: result.duration_ms,
           ttft: result.ttft_ms,
           usage: result.usage,
-        });
+        };
+        setThinking(result.thinking);
+        setMeta(requestMeta);
         setRawResponse(JSON.stringify(result.raw ?? result, null, 2));
-        if (text) setMessages((current) => [...current, { role: "assistant", content: text }]);
+        if (text) appendAssistant(text, requestMeta);
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        if (text) setMessages((current) => [...current, { role: "assistant", content: text }]);
+        if (text) appendAssistant(text, requestMeta);
         setOutput("");
-        setError("stopped");
+        setError(t("playground.stopped"));
       } else {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -219,13 +238,13 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
   async function savePrompt(asNew: boolean) {
     const name = promptName.trim();
     if (!name) {
-      setError("prompt name is required");
+      setError(t("playground.promptNameRequired"));
       return;
     }
     const payload = {
       name,
       system,
-      messages,
+      messages: messages.map(({ role, content }) => ({ role, content })),
       params: numericParams(params),
     };
     try {
@@ -246,7 +265,7 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
     setPromptId(prompt.id);
     setPromptName(prompt.name);
     setSystem(prompt.system);
-    setMessages(prompt.messages);
+    setMessages(prompt.messages.map(({ role, content }) => ({ role, content })));
     const next: Record<string, string> = { ...defaultParams };
     for (const [key, value] of Object.entries(prompt.params ?? {})) {
       next[key] = String(value);
@@ -259,7 +278,7 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
 
   async function removePrompt() {
     if (!promptId) return;
-    if (!window.confirm(`Delete prompt ${promptName}?`)) return;
+    if (!window.confirm(t("playground.confirmDeletePrompt", { name: promptName }))) return;
     try {
       await deletePrompt(promptId);
       setPromptId("");
@@ -272,111 +291,117 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
 
   return (
     <main className="playground">
-      <aside className="pg-controls">
-        <section>
-          <h2>Model</h2>
-          <label>
-            Provider
-            <select value={providerId} onChange={(event) => setProviderId(event.target.value)}>
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>{provider.name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Model
-            <input
-              list="model-options"
-              value={modelId}
-              placeholder="model name"
-              onChange={(event) => setModelId(event.target.value)}
+      <aside className="panel pg-controls">
+        <div className="panel-head">
+          <h2>{t("nav.playground")}</h2>
+          <span className="aside-note">{t("playground.model")}</span>
+        </div>
+        <div className="panel-body pg-scroll">
+          <section className="control-section">
+            <label>
+              {t("playground.provider")}
+              <select value={providerId} onChange={(event) => setProviderId(event.target.value)}>
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>{provider.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              {t("playground.modelName")}
+              <SearchSelect
+                value={modelId}
+                options={toModelOptions(models)}
+                placeholder={t("playground.modelPlaceholder")}
+                onChange={setModelId}
+              />
+            </label>
+            <label className="row">
+              <input type="checkbox" checked={stream} onChange={(event) => setStream(event.target.checked)} />
+              {t("playground.stream")}
+            </label>
+            <label>
+              {t("playground.thinking")}
+              <select value={thinkMode} onChange={(event) => setThinkMode(event.target.value as typeof thinkMode)}>
+                <option value="off">{t("playground.thinkingOff")}</option>
+                <option value="on">{t("playground.thinkingOn")}</option>
+                <option value="passthrough">{t("playground.thinkingPassthrough")}</option>
+              </select>
+            </label>
+          </section>
+
+          <section className="control-section">
+            <h3>{t("playground.system")}</h3>
+            <textarea
+              className="system"
+              value={system}
+              placeholder={t("playground.systemPlaceholder")}
+              onChange={(event) => setSystem(event.target.value)}
             />
-            <datalist id="model-options">
-              {models.map((model) => (
-                <option key={model.id} value={model.id}>{model.name}</option>
+          </section>
+
+          <section className="control-section">
+            <h3>{t("playground.params")}</h3>
+            <div className="param-grid">
+              {Object.entries(params).map(([key, value]) => (
+                <label key={key}>
+                  {key}
+                  <input
+                    value={value}
+                    onChange={(event) => setParams((current) => ({ ...current, [key]: event.target.value }))}
+                  />
+                </label>
               ))}
-            </datalist>
-          </label>
-          <label className="row">
-            <input type="checkbox" checked={stream} onChange={(event) => setStream(event.target.checked)} />
-            stream
-          </label>
-          <label>
-            Thinking
-            <select value={thinkMode} onChange={(event) => setThinkMode(event.target.value as typeof thinkMode)}>
-              <option value="off">off</option>
-              <option value="on">on</option>
-              <option value="passthrough">passthrough</option>
+            </div>
+          </section>
+
+          <section className="control-section">
+            <h3>{t("playground.prompts")}</h3>
+            <input
+              placeholder={t("playground.promptName")}
+              value={promptName}
+              onChange={(event) => setPromptName(event.target.value)}
+            />
+            <div className="button-row">
+              <button onClick={() => void savePrompt(false)} disabled={!promptId}>
+                {t("action.update")}
+              </button>
+              <button onClick={() => void savePrompt(true)}>{t("action.saveNew")}</button>
+              <button onClick={() => void removePrompt()} disabled={!promptId}>
+                {t("action.delete")}
+              </button>
+            </div>
+            <select value={promptId} onChange={(event) => loadPrompt(event.target.value)}>
+              <option value="">{t("playground.loadPrompt")}</option>
+              {prompts.map((prompt) => (
+                <option key={prompt.id} value={prompt.id}>{prompt.name}</option>
+              ))}
             </select>
-          </label>
-        </section>
-
-        <section>
-          <h2>System Prompt</h2>
-          <textarea
-            className="system"
-            value={system}
-            placeholder="Optional system prompt"
-            onChange={(event) => setSystem(event.target.value)}
-          />
-        </section>
-
-        <section>
-          <h2>Parameters</h2>
-          <div className="param-grid">
-            {Object.entries(params).map(([key, value]) => (
-              <label key={key}>
-                {key}
-                <input
-                  value={value}
-                  onChange={(event) => setParams((current) => ({ ...current, [key]: event.target.value }))}
-                />
-              </label>
-            ))}
-          </div>
-        </section>
-
-        <section>
-          <h2>Saved Prompts</h2>
-          <input
-            placeholder="prompt name"
-            value={promptName}
-            onChange={(event) => setPromptName(event.target.value)}
-          />
-          <div className="button-row">
-            <button onClick={() => void savePrompt(false)} disabled={!promptId}>
-              update
-            </button>
-            <button onClick={() => void savePrompt(true)}>save new</button>
-            <button onClick={() => void removePrompt()} disabled={!promptId}>
-              delete
-            </button>
-          </div>
-          <select value={promptId} onChange={(event) => loadPrompt(event.target.value)}>
-            <option value="">load a prompt…</option>
-            {prompts.map((prompt) => (
-              <option key={prompt.id} value={prompt.id}>{prompt.name}</option>
-            ))}
-          </select>
-        </section>
+          </section>
+        </div>
       </aside>
 
-      <section className="pg-main">
+      <section className="panel pg-main">
         <div className="pg-head">
           <div>
-            <h2>{modelId || "Playground"}</h2>
-            <div className="subtle">
-              {meta.requestId ? <span className="mono">{meta.requestId}</span> : "debug a prompt, not just chat"}
+            <h2>{modelId || t("nav.playground")}</h2>
+            <div className="subtle mono">
+              {meta.requestId || t("playground.subtitle")}
             </div>
           </div>
           <div className="pg-meta">
-            <span>ttft <strong>{formatDuration(meta.ttft)}</strong></span>
-            <span>total <strong>{formatDuration(meta.duration)}</strong></span>
+            <span>{t("common.ttft")} <strong>{formatDuration(meta.ttft)}</strong></span>
+            <span>{t("common.duration")} <strong>{formatDuration(meta.duration)}</strong></span>
             {meta.usage ? (
-              <span>tokens <strong>{meta.usage.prompt_tokens} / {meta.usage.completion_tokens} / {meta.usage.total_tokens}</strong></span>
+              <span>
+                {t("common.tokens")} <TokenUsage
+                  prompt={meta.usage.prompt_tokens}
+                  completion={meta.usage.completion_tokens}
+                  total={meta.usage.total_tokens}
+                />
+              </span>
             ) : null}
             {meta.requestId ? (
-              <button onClick={() => onOpenRequest(meta.requestId)}>inspect</button>
+              <button onClick={() => onOpenRequest(meta.requestId)}>{t("action.inspect")}</button>
             ) : null}
           </div>
         </div>
@@ -388,11 +413,26 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
             <article key={index} className={`bubble ${message.role}`}>
               <div className="bubble-role">{message.role}</div>
               <div className="bubble-text">{message.content}</div>
+              {message.metrics ? (
+                <div className="bubble-meta">
+                  <span>{t("common.ttft")} <strong>{formatDuration(message.metrics.ttft)}</strong></span>
+                  <span>{t("common.duration")} <strong>{formatDuration(message.metrics.duration)}</strong></span>
+                  {message.metrics.usage ? (
+                    <span>
+                      {t("common.tokens")} <TokenUsage
+                        prompt={message.metrics.usage.prompt_tokens}
+                        completion={message.metrics.usage.completion_tokens}
+                        total={message.metrics.usage.total_tokens}
+                      />
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </article>
           ))}
           {thinking ? (
             <details className="thinking" open>
-              <summary>thinking</summary>
+              <summary>{t("playground.thinking")}</summary>
               <pre>{thinking}</pre>
             </details>
           ) : null}
@@ -404,8 +444,8 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
           ) : null}
           {!messages.length && !output && !busy ? (
             <div className="pg-empty">
-              <h2>Developer playground</h2>
-              <p>Pick a model, edit the system prompt and params, then send. Every call is recorded in Inspector.</p>
+              <h2>{t("playground.emptyTitle")}</h2>
+              <p>{t("playground.emptyBody")}</p>
             </div>
           ) : null}
         </div>
@@ -413,7 +453,7 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
         <div className="composer">
           <textarea
             value={input}
-            placeholder="User message…"
+            placeholder={t("playground.promptPlaceholder")}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -423,20 +463,22 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
             }}
           />
           <div className="composer-actions">
-            <button onClick={clear} disabled={busy}>clear</button>
-            {busy ? <button onClick={stop}>stop</button> : <button className="primary" onClick={() => void send()} disabled={!input.trim() || !modelId}>send</button>}
+            <button onClick={clear} disabled={busy}>{t("action.clear")}</button>
+            {busy
+              ? <button onClick={stop}>{t("action.stop")}</button>
+              : <button onClick={() => void send()} disabled={!input.trim() || !modelId}>{t("action.send")}</button>}
           </div>
         </div>
 
         <details className="raw">
-          <summary>raw request / response</summary>
+          <summary>{t("playground.raw")}</summary>
           <div className="raw-grid">
             <div>
-              <h3>request</h3>
+              <h3>{t("playground.request")}</h3>
               <pre>{rawRequest || "—"}</pre>
             </div>
             <div>
-              <h3>response</h3>
+              <h3>{t("playground.response")}</h3>
               <pre>{rawResponse || "—"}</pre>
             </div>
           </div>

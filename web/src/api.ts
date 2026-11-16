@@ -14,7 +14,7 @@ import type {
   Run,
 } from "./types";
 
-const base = "/__workbench/api";
+const base = "/_/workbench/api";
 
 async function getJSON<T>(path: string): Promise<T> {
   const response = await fetch(base + path, { headers: { Accept: "application/json" } });

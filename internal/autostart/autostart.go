@@ -23,10 +23,6 @@ import (
 // Label is the launchd job label and plist base name.
 const Label = "com.github.llm-workbench"
 
-// LegacyLabel is the pre-rename launchd label. It is only reported by
-// "migrate"; the new binary never loads or edits it.
-const LegacyLabel = "com.github.ollama-nothink-proxy"
-
 const launchctlTimeout = 15 * time.Second
 
 // State is what the portal shows for the autostart card.
@@ -55,22 +51,6 @@ func PlistPath() string {
 		home = "~"
 	}
 	return filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
-}
-
-// LegacyPlistPath is the pre-rename LaunchAgent path.
-func LegacyPlistPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "~"
-	}
-	return filepath.Join(home, "Library", "LaunchAgents", LegacyLabel+".plist")
-}
-
-// LegacyInstalled reports whether the pre-rename plist still exists. The
-// migration command only reports it; it never unloads or deletes it.
-func LegacyInstalled() bool {
-	_, err := os.Stat(LegacyPlistPath())
-	return err == nil
 }
 
 // State reports the current install/load status.
@@ -209,6 +189,25 @@ func Kickstart() error {
 	return nil
 }
 
+// StopJob unloads the loaded job but keeps its plist. A normal shutdown would
+// be undone immediately by KeepAlive, and deleting the plist would silently
+// turn autostart off; unloading leaves the next login to start it again.
+func StopJob() error {
+	state := StateNow()
+	if !state.Supported {
+		return errors.New(i18n.T("autostart.errOnlyMac"))
+	}
+	if !state.Loaded {
+		return errors.New(i18n.T("autostart.notLoaded"))
+	}
+	bootout()
+	time.Sleep(300 * time.Millisecond)
+	if StateNow().Loaded {
+		return errors.New(i18n.T("autostart.errStillLoaded"))
+	}
+	return nil
+}
+
 // RenderPlist produces the LaunchAgent property list. It is exported so the
 // payload can be tested without touching launchd.
 func RenderPlist(command []string, logPath, workingDir string) string {
@@ -226,11 +225,6 @@ func RenderPlist(command []string, logPath, workingDir string) string {
 	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n")
 	b.WriteString("\t<key>KeepAlive</key>\n\t<true/>\n")
 	b.WriteString("\t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n")
-	// launchd does not inherit the shell locale, so pin the language of the
-	// supervised instance to the one this UI runs in.
-	b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
-	writeKeyString(&b, "LLM_WORKBENCH_LANG", i18n.Current().String())
-	b.WriteString("\t</dict>\n")
 	writeKeyString(&b, "StandardOutPath", logPath)
 	writeKeyString(&b, "StandardErrorPath", logPath)
 	if workingDir != "" {

@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { getHealth } from "./api";
 import ExperimentsPage from "./ExperimentsPage";
+import { I18nProvider, useI18n } from "./i18n";
 import PlaygroundPage from "./PlaygroundPage";
 import RequestsPage from "./RequestsPage";
 import type { Health, RequestDetail } from "./types";
 
 type View = "requests" | "playground" | "experiments";
+
+const views: View[] = ["requests", "playground", "experiments"];
 
 function formatBytes(bytes?: number): string {
   if (!bytes) return "0 B";
@@ -14,11 +17,23 @@ function formatBytes(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function App() {
-  const [view, setView] = useState<View>("requests");
+function viewFromHash(): View {
+  const raw = window.location.hash.replace(/^#/, "");
+  return views.includes(raw as View) ? (raw as View) : "requests";
+}
+
+function Shell() {
+  const { lang, toggle, t } = useI18n();
+  const [view, setView] = useState<View>(viewFromHash);
   const [selected, setSelected] = useState<string | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [seed, setSeed] = useState<RequestDetail | null>(null);
+
+  useEffect(() => {
+    const onHash = () => setView(viewFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,55 +57,53 @@ export default function App() {
   function openRequest(id: string) {
     setSelected(id);
     setView("requests");
+    window.location.hash = "requests";
   }
 
   function createExperimentFromRequest(detail: RequestDetail) {
     setSeed(detail);
     setView("experiments");
+    window.location.hash = "experiments";
   }
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">LW</span>
+      <header className="bar">
+        <a className="brand" href="#requests" aria-label="LLM Workbench">
+          <span className="mark" aria-hidden="true">LW</span>
           <div>
             <h1>LLM Workbench</h1>
-            <p>Local-first proxy &amp; experiment workbench</p>
+            <p>{t("app.tagline")}</p>
           </div>
-        </div>
-        <nav className="nav">
-          <button
-            className={`nav-item ${view === "requests" ? "active" : ""}`}
-            onClick={() => setView("requests")}
-          >
-            Requests
-          </button>
-          <button
-            className={`nav-item ${view === "playground" ? "active" : ""}`}
-            onClick={() => setView("playground")}
-          >
-            Playground
-          </button>
-          <button
-            className={`nav-item ${view === "experiments" ? "active" : ""}`}
-            onClick={() => setView("experiments")}
-          >
-            Experiments
-          </button>
+        </a>
+        <nav className="nav" aria-label="LLM Workbench">
+          <a href="/_/llm-proxy">{t("nav.proxy")}</a>
+          {views.map((name) => (
+            <a key={name} href={`#${name}`} aria-current={view === name ? "page" : undefined}>
+              {t(`nav.${name}`)}
+            </a>
+          ))}
         </nav>
-        <div className="health">
+        <div className="chips">
+          <span className="chip">{health ? `v${health.version}` : "v…"}</span>
           {health ? (
             <>
-              <span>{health.storage.count} requests</span>
-              <span>{formatBytes(health.storage.size_bytes)}</span>
-              <span className={health.inspector.capture_bodies ? "pill on" : "pill"}>
-                {health.inspector.capture_bodies ? "bodies on" : "bodies off"}
+              <span className="chip">{t("chip.requests", { n: health.storage.count })}</span>
+              <span className="chip">{formatBytes(health.storage.size_bytes)}</span>
+              <span className={health.inspector.capture_bodies ? "chip on" : "chip"}>
+                {health.inspector.capture_bodies ? t("chip.bodiesOn") : t("chip.bodiesOff")}
               </span>
             </>
-          ) : (
-            <span>connecting…</span>
-          )}
+          ) : null}
+        </div>
+        <div className="actions">
+          <span className={health ? "status" : "status stopped"}>
+            <i className="dot" />
+            <span>{health ? t("status.connected") : t("status.connecting")}</span>
+          </span>
+          <button className="ghost small" onClick={toggle} title={t("action.lang")}>
+            {lang === "en" ? "中文" : "EN"}
+          </button>
         </div>
       </header>
 
@@ -111,5 +124,13 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <I18nProvider>
+      <Shell />
+    </I18nProvider>
   );
 }

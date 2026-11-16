@@ -89,12 +89,8 @@ type Options struct {
 	// CaptureBodyLimit bounds the in-memory response body kept for Recorder
 	// (default 256 KiB). It never changes what is sent to the client.
 	CaptureBodyLimit int
-	// Verbose logs every request to Console.
-	Verbose bool
 	// Recorder receives one structured entry per request; may be nil.
 	Recorder Recorder
-	// Console receives verbose request lines; may be nil.
-	Console io.Writer
 	// ErrorLog receives net/http and ReverseProxy internals; may be nil.
 	ErrorLog io.Writer
 }

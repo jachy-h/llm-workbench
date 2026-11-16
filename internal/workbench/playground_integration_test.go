@@ -58,12 +58,12 @@ func TestPlaygroundAgainstOllamaShapedUpstream(t *testing.T) {
 	t.Cleanup(func() { store.Close() })
 	handler := New(Options{Version: "test", Store: store, Engine: eng})
 
-	rec := call(handler, http.MethodGet, "/__workbench/api/providers/ollama/models", "")
+	rec := call(handler, http.MethodGet, "/_/workbench/api/providers/ollama/models", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "qwen3:8b") {
 		t.Fatalf("models = %d %s", rec.Code, rec.Body.String())
 	}
 
-	rec = call(handler, http.MethodPost, "/__workbench/api/chat",
+	rec = call(handler, http.MethodPost, "/_/workbench/api/chat",
 		`{"provider":"ollama","model":"qwen3:8b","messages":[{"role":"user","content":"hi"}],"params":{"temperature":0.2,"top_k":40},"think":false,"stream":true}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("chat = %d %s", rec.Code, rec.Body.String())

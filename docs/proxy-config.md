@@ -17,9 +17,8 @@
 
 1. 客户端 body 显式字段；
 2. 请求级 profile（`X-Workbench-Profile`，完整快照）；
-3. 启动时选中的 profile / 全局 params：
+3. 启动时选中的 profile / 全局设置：
    - CLI `--set`
-   - 环境变量 `PROXY_PARAMS`
    - 配置文件 `params`
    - 内置默认 profile
 4. Provider 自身默认值。
@@ -30,7 +29,7 @@
 - 请求头选择的 profile 是一份独立快照，不叠加全局 `--set`；
 - 客户端显式字段永远最高。
 
-thinking 不适用第 1 条：它由模式决定，默认 `off` 会强制关闭。要允许客户端控制，必须使用 `on` / `passthrough` 或对应 profile。
+thinking 不适用第 1 条：它由模式决定，默认 `off` 会强制关闭。要允许客户端控制，必须使用 `on` / `passthrough` 或对应 profile。模式在代理页面上切换。
 
 ## 参数
 
@@ -91,6 +90,8 @@ thinking 不适用第 1 条：它由模式决定，默认 `off` 会强制关闭�
 - 其他消息对象即使包含未知字段（images、tool calls）也原样保留；
 - `override` 是破坏性操作，必须显式开启。
 
+模式和文本在代理页面上配置，即时生效。
+
 ## Profile
 
 ```json
@@ -112,7 +113,7 @@ thinking 不适用第 1 条：它由模式决定，默认 `off` 会强制关闭�
 - `raw`：thinking passthrough + 不注入参数；
 - `thinking`：thinking on + 不注入参数。
 
-配置文件中的 profile 会覆盖同名内置项。`--set` 在选中 profile 时仍会覆盖该 profile 的参数，避免参数被静默忽略。
+配置文件中的 profile 会覆盖同名内置项。`--set` 在选中 profile 时仍会覆盖该 profile 的参数，避免参数被静默忽略。profile 列表和默认 profile 都在代理页面上编辑。
 
 ## 请求级控制头
 
@@ -130,10 +131,12 @@ X-Workbench-Thinking: off | on | passthrough
 路径：
 
 ```text
-macOS:        ~/Library/Application Support/llm-workbench/config.json
-Linux:        $XDG_CONFIG_HOME/llm-workbench/config.json
-Windows:      %LOCALAPPDATA%\llm-workbench\config.json
+所有系统:  ~/.config/llm-workbench/config.jsonc   （设置了 XDG_CONFIG_HOME 时优先用它）
 ```
+
+文件是 JSONC：允许 `//`、`/* */` 注释和尾逗号，保存时写回纯 JSON。旧版本的 `~/Library/Application Support/llm-workbench/config.json`、`~/.config/llm-workbench/config.json` 以及改名前的 `ollama-nothink-proxy/config.json` 会在第一次启动时自动导入，原文件保留为 `*.bak`。
+
+监听端口默认 11500，且永远不会是 11434（Ollama 占用它）：配置里存了 11434 或与 upstream 相同的端口时，会改成 11500 并写回；显式 `--port 11434` 同样会被纠正并提示。
 
 示例：
 
@@ -148,21 +151,25 @@ Windows:      %LOCALAPPDATA%\llm-workbench\config.json
   "system_prompt": {"mode": "off", "text": ""},
   "profiles": {},
   "profile": "",
+  "inspector": {"enabled": true, "capture_bodies": false, "max_body_bytes": 262144, "retention_days": 14, "max_rows": 5000},
+  "storage": {"path": "~/Library/Application Support/llm-workbench/workbench.db"},
+  "max_concurrent": 8,
+  "max_body_size": 1048576,
   "lang": "zh"
 }
 ```
 
-未知的顶层键会被保留，避免降级或旧控制台保存时丢配置。
+未知的顶层键会被保留，避免降级或页面保存时丢配置。
 
 ## 热更新
 
 - `upstream`、`timeout`、`params`、`thinking`、`system_prompt`、`profiles`、`profile`、`lang` 可即时生效；
-- `host` / `port` 需要 `llm-workbench restart`；
+- `host` / `port`、`storage.path`、`max_concurrent`、`max_body_size` 和 inspector 的保留设置需要 `llm-workbench restart`；
 - 配置文件先原子写入成功，才会切换内存值。
 
 ## 安全
 
-- 只监听本机；`/__portal` 仅 loopback；
+- 只监听本机；`/_/llm-proxy` 仅 loopback；
 - 不记录请求 body/header（Phase 1）；
 - 新增控制头不会转发给上游；
 - 不要把服务暴露到局域网或公网。

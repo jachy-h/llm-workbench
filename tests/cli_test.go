@@ -111,14 +111,14 @@ func testEnv(overrides map[string]string) []string {
 	delete(environ, "PORT")
 	delete(environ, "UPSTREAM")
 	delete(environ, "PROXY_PARAMS")
-	// Language: the assertions are written in Chinese, so pin the language
-	// instead of inheriting the developer's locale. A test that wants English
-	// passes LLM_WORKBENCH_LANG=en in overrides.
 	delete(environ, "LLM_WORKBENCH_LANG")
+	// Language now follows the locale or the config file. The assertions are
+	// written in Chinese, so pin a Chinese locale instead of inheriting the
+	// developer's. A test that wants English passes LANG=en_US.UTF-8.
 	delete(environ, "LANG")
 	delete(environ, "LC_ALL")
 	delete(environ, "LC_MESSAGES")
-	environ["LLM_WORKBENCH_LANG"] = "zh"
+	environ["LANG"] = "zh_CN.UTF-8"
 	for k, v := range overrides {
 		environ[k] = v
 	}
@@ -129,13 +129,28 @@ func testEnv(overrides map[string]string) []string {
 	return out
 }
 
+// writeConfig writes a config document so tests can set values that no longer
+// have a CLI flag.
+func writeConfig(t *testing.T, path, document string) string {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func startProxy(t *testing.T, args []string, env map[string]string) *runningProxy {
+	t.Helper()
+	return startProxyMode(t, args, env, true)
+}
+
+func startProxyMode(t *testing.T, args []string, env map[string]string, autoPort bool) *runningProxy {
 	t.Helper()
 	// Tests supervise the process themselves: force foreground and never open
 	// a browser. The default background mode has its own test.
 	args = append([]string{"--foreground", "--no-browser"}, args...)
 	// Never collide with a proxy the developer is already running on 11500.
-	if !hasFlag(args, "--port") && env["PORT"] == "" {
+	if autoPort && !hasFlag(args, "--port") {
 		args = append(args, "--port", strconv.Itoa(freePort(t)))
 	}
 	if !hasFlag(args, "--db") {
@@ -305,21 +320,29 @@ func TestHelp(t *testing.T) {
 		t.Fatalf("--help: %v", err)
 	}
 	for _, needle := range []string{
-		"--set", "--no-defaults", "--max-concurrent", "--max-body-size",
-		"PROXY_PARAMS", "--version", "migrate", "--thinking", "--system-prompt", "--profile",
-		"--no-inspector", "--capture-bodies", "--db", "--retention-days", "--max-rows",
+		"--set", "--host", "--port", "--config", "--log", "--db", "--version",
+		"stop", "restart", "start", "/_/llm-proxy",
 	} {
 		if !strings.Contains(string(out), needle) {
 			t.Errorf("--help is missing %q", needle)
+		}
+	}
+	for _, unwanted := range []string{
+		"--upstream", "--timeout", "--thinking", "--system-prompt", "--profile",
+		"--no-inspector", "--capture-bodies", "--retention-days", "--max-rows",
+		"--max-body-size", "--max-concurrent", "PROXY_PARAMS", "LLM_WORKBENCH_LANG",
+	} {
+		if strings.Contains(string(out), unwanted) {
+			t.Errorf("--help still lists %q:\n%s", unwanted, out)
 		}
 	}
 }
 
 func TestInvalidArgumentsExit2(t *testing.T) {
 	for _, args := range [][]string{
-		{"--upstream", "ftp://x"},
 		{"--set", "temperature"},
 		{"--port", "not-a-number"},
+		{"--upstream", "ftp://x"},
 		{"--nope"},
 	} {
 		out, err := exec.Command(binaryPath, args...).CombinedOutput()
@@ -345,9 +368,9 @@ func asExitError(err error, target **exec.ExitError) bool {
 func TestBannerAndPassthrough(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
+	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
 	p := startProxy(t, []string{
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
 	}, nil)
@@ -372,28 +395,24 @@ func TestBannerAndPassthrough(t *testing.T) {
 	}
 }
 
-func TestEnvPortUpstreamAndConfigFile(t *testing.T) {
+func TestConfigFileUpstreamAndParams(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
 	port := freePort(t)
 	configPath := filepath.Join(dir, "config.json")
-	file := fmt.Sprintf(`{"upstream": %q, "timeout": 30, "params": {"temperature": 0.33}}`, up.server.URL)
+	file := fmt.Sprintf(`{"port": %d, "upstream": %q, "timeout": 30, "params": {"max_tokens": 42}}`, port, up.server.URL)
 	if err := os.WriteFile(configPath, []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// PORT from the environment, upstream + params from the config file.
-	p := startProxy(t, []string{
+	p := startProxyMode(t, []string{
 		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
-	}, map[string]string{
-		"PORT":         fmt.Sprint(port),
-		"PROXY_PARAMS": `{"max_tokens": 42}`,
-	})
+	}, nil, false)
 
 	if p.port != port {
-		t.Errorf("port = %d, want %d from env", p.port, port)
+		t.Errorf("port = %d, want %d from config", p.port, port)
 	}
 	status, echo := postJSON(t, p.base, "/v1/chat/completions", `{"model":"m"}`)
 	if status != http.StatusOK {
@@ -401,25 +420,24 @@ func TestEnvPortUpstreamAndConfigFile(t *testing.T) {
 	}
 	got := decodeBody(t, echo.Body)
 	if got["max_tokens"] != float64(42) {
-		t.Errorf("max_tokens = %v, want 42 from PROXY_PARAMS", got["max_tokens"])
+		t.Errorf("max_tokens = %v, want 42 from the config file", got["max_tokens"])
 	}
 	if _, present := got["temperature"]; present {
-		t.Errorf("PROXY_PARAMS should replace config params, got %v", got)
+		t.Errorf("config params replace the defaults, got %v", got)
 	}
 	if got["reasoning_effort"] != "none" {
 		t.Errorf("reasoning_effort = %v", got["reasoning_effort"])
 	}
 }
 
-func TestNoDefaultsAndCLISet(t *testing.T) {
+func TestCLISet(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
+	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
 	p := startProxy(t, []string{
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
-		"--no-defaults",
 		"--set", "temperature=0",
 		"--set", "max_tokens=7",
 	}, nil)
@@ -430,35 +448,30 @@ func TestNoDefaultsAndCLISet(t *testing.T) {
 	if !ok {
 		t.Fatalf("options = %v", got["options"])
 	}
-	if len(options) != 2 || options["temperature"] != float64(0) || options["num_predict"] != float64(7) {
-		t.Errorf("options = %v, want only temperature/num_predict", options)
+	if options["temperature"] != float64(0) || options["num_predict"] != float64(7) {
+		t.Errorf("options = %v, want temperature 0 and num_predict 7", options)
 	}
 	if got["think"] != false {
 		t.Errorf("think = %v", got["think"])
 	}
-	if _, present := got["keep_alive"]; present {
-		t.Error("--no-defaults still injected keep_alive")
+	if got["keep_alive"] != "30m" {
+		t.Errorf("keep_alive = %v, want the default 30m", got["keep_alive"])
 	}
 }
 
-func TestVerboseLoggingAndLogFile(t *testing.T) {
+func TestRequestLogFile(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "proxy.log")
+	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
 	p := startProxy(t, []string{
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", configPath,
 		"--log", logPath,
-		"-v",
 	}, nil)
 
 	_, _ = postJSON(t, p.base, "/api/tags", "")
 	_ = p.stopAndWait(t)
 
-	console := p.stdout.String() + p.stderr.String()
-	if !strings.Contains(console, "POST /api/tags -> 200") {
-		t.Errorf("verbose console missing request line:\n%s", console)
-	}
 	logged, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -477,9 +490,9 @@ func TestVerboseLoggingAndLogFile(t *testing.T) {
 func TestGracefulShutdown(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
+	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
 	p := startProxy(t, []string{
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
 	}, nil)
@@ -510,15 +523,15 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
+	writeConfig(t, configPath, fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
 	p := startProxy(t, []string{
-		"--upstream", up.server.URL,
 		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
 	}, nil)
 
 	// The portal page is embedded in the binary, not read from disk.
-	resp, err := http.Get(p.base + "/__portal")
+	resp, err := http.Get(p.base + "/_/llm-proxy")
 	if err != nil {
 		t.Fatalf("portal page: %v", err)
 	}
@@ -533,7 +546,7 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 		}
 	}
 
-	resp, err = http.Get(p.base + "/__portal/api/state")
+	resp, err = http.Get(p.base + "/_/llm-proxy/api/state")
 	if err != nil {
 		t.Fatalf("portal state: %v", err)
 	}
@@ -550,7 +563,7 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 	}
 
 	// Saving params through the portal changes injection immediately.
-	status, data := postRaw(t, p.base+"/__portal/api/config", `{"params":{"temperature":0.25}}`)
+	status, data := postRaw(t, p.base+"/_/llm-proxy/api/config", `{"params":{"temperature":0.25}}`)
 	if status != http.StatusOK {
 		t.Fatalf("config save status = %d: %s", status, data)
 	}
@@ -585,7 +598,7 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 	}
 
 	// Structured log entries are visible to the portal.
-	resp, err = http.Get(p.base + "/__portal/api/log?since=0")
+	resp, err = http.Get(p.base + "/_/llm-proxy/api/log?since=0")
 	if err != nil {
 		t.Fatalf("log endpoint: %v", err)
 	}
@@ -630,7 +643,7 @@ func waitForState(t *testing.T, base string, timeout time.Duration) map[string]a
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(base + "/__portal/api/state")
+		resp, err := http.Get(base + "/_/llm-proxy/api/state")
 		if err == nil {
 			var state map[string]any
 			err = json.NewDecoder(resp.Body).Decode(&state)
@@ -665,13 +678,13 @@ func TestBackgroundModeSpawnsAndPortalShutsDown(t *testing.T) {
 	dir := t.TempDir()
 	port := freePort(t)
 	configPath := filepath.Join(dir, "config.json")
+	writeConfig(t, configPath, fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
 	logPath := filepath.Join(dir, "proxy.log")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binaryPath,
 		"--port", strconv.Itoa(port),
-		"--upstream", up.server.URL,
 		"--config", configPath,
 		"--log", logPath,
 		"--db", filepath.Join(dir, "workbench.db"),
@@ -687,8 +700,8 @@ func TestBackgroundModeSpawnsAndPortalShutsDown(t *testing.T) {
 		t.Fatalf("banner does not report a background pid:\n%s", banner)
 	}
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	if !strings.Contains(banner, "portal    "+base+"/__portal") {
-		t.Errorf("banner missing portal URL:\n%s", banner)
+	if !strings.Contains(banner, "proxy     "+base+"/_/llm-proxy") {
+		t.Errorf("banner missing proxy URL:\n%s", banner)
 	}
 
 	pid := parseChildPID(banner)
@@ -715,7 +728,7 @@ func TestBackgroundModeSpawnsAndPortalShutsDown(t *testing.T) {
 		t.Errorf("banner missing stop hint:\n%s", banner)
 	}
 
-	status, data := postRaw(t, base+"/__portal/api/shutdown", "")
+	status, data := postRaw(t, base+"/_/llm-proxy/api/shutdown", "")
 	if status != http.StatusOK || !strings.Contains(string(data), `"ok":true`) {
 		t.Fatalf("shutdown status=%d body=%s", status, data)
 	}
@@ -747,8 +760,7 @@ func TestBackgroundModeReusesRunningInstance(t *testing.T) {
 	port := freePort(t)
 	args := []string{
 		"--port", strconv.Itoa(port),
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL)),
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
 		"--no-browser",
@@ -782,7 +794,7 @@ func TestBackgroundModeReusesRunningInstance(t *testing.T) {
 		t.Errorf("second start spawned another process:\n%s", out2)
 	}
 
-	postRaw(t, base+"/__portal/api/shutdown", "")
+	postRaw(t, base+"/_/llm-proxy/api/shutdown", "")
 	waitForPortClosed(t, port, 10*time.Second)
 }
 
@@ -793,8 +805,7 @@ func TestRestartReplacesRunningInstance(t *testing.T) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	args := []string{
 		"--port", strconv.Itoa(port),
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL)),
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
 		"--no-browser",
@@ -863,8 +874,7 @@ func TestRestartStartsWhenNothingIsRunning(t *testing.T) {
 	cmd := exec.CommandContext(ctx, binaryPath,
 		"restart",
 		"--port", strconv.Itoa(port),
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL)),
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
 		"--no-browser",
@@ -889,14 +899,72 @@ func TestRestartStartsWhenNothingIsRunning(t *testing.T) {
 			_ = proc.Signal(syscall.SIGTERM)
 		}
 	})
-	postRaw(t, base+"/__portal/api/shutdown", "")
+	postRaw(t, base+"/_/llm-proxy/api/shutdown", "")
 	waitForPortClosed(t, port, 10*time.Second)
 }
 
-// inspectState reads /api/state without failing the test when nothing answers.
+// TestStopCommand shuts a running instance down and is idempotent when
+// nothing is listening.
+func TestStopCommand(t *testing.T) {
+	up := newEchoUpstream(t)
+	dir := t.TempDir()
+	port := freePort(t)
+	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
+	logPath := filepath.Join(dir, "proxy.log")
+	args := []string{
+		"--port", strconv.Itoa(port),
+		"--config", configPath,
+		"--log", logPath,
+		"--db", filepath.Join(dir, "workbench.db"),
+		"--no-browser",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	start := exec.CommandContext(ctx, binaryPath, args...)
+	start.Env = testEnv(nil)
+	out, err := start.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start: %v\n%s", err, out)
+	}
+	pid := parseChildPID(string(out))
+	if pid == 0 {
+		t.Fatalf("could not parse pid:\n%s", out)
+	}
+	t.Cleanup(func() {
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+		}
+	})
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	waitForState(t, base, 10*time.Second)
+
+	stop := exec.Command(binaryPath, "stop", "--port", strconv.Itoa(port), "--config", configPath, "--log", logPath)
+	stop.Env = testEnv(nil)
+	stopOut, err := stop.CombinedOutput()
+	if err != nil {
+		t.Fatalf("stop: %v\n%s", err, stopOut)
+	}
+	if !strings.Contains(string(stopOut), "已停止服务") {
+		t.Errorf("stop output = %s", stopOut)
+	}
+	waitForPortClosed(t, port, 10*time.Second)
+
+	// Stopping again is not an error.
+	again := exec.Command(binaryPath, "stop", "--port", strconv.Itoa(port), "--config", configPath, "--log", logPath)
+	again.Env = testEnv(nil)
+	againOut, err := again.CombinedOutput()
+	if err != nil {
+		t.Fatalf("second stop: %v\n%s", err, againOut)
+	}
+	if !strings.Contains(string(againOut), "没有在运行的实例") {
+		t.Errorf("second stop output = %s", againOut)
+	}
+}
+
 func inspectState(base string) (map[string]any, bool) {
 	client := &http.Client{Timeout: time.Second}
-	resp, err := client.Get(base + "/__portal/api/state")
+	resp, err := client.Get(base + "/_/llm-proxy/api/state")
 	if err != nil {
 		return nil, false
 	}
@@ -908,15 +976,14 @@ func inspectState(base string) (map[string]any, bool) {
 	return state, true
 }
 
-// TestEnglishBannerAndHelp covers the English side of the language switch:
-// --lang on the command line and LLM_WORKBENCH_LANG in the environment.
+// TestEnglishBannerAndHelp covers English output driven by the system locale.
 func TestEnglishBannerAndHelp(t *testing.T) {
-	out, err := exec.Command(binaryPath, "--lang", "en", "--help").CombinedOutput()
+	out, err := execCommandEnv([]string{"--help"}, map[string]string{"LANG": "en_US.UTF-8"})
 	if err != nil {
-		t.Fatalf("--lang en --help: %v (%s)", err, out)
+		t.Fatalf("--help: %v (%s)", err, out)
 	}
 	for _, needle := range []string{
-		"Usage: llm-workbench", "start the proxy", "--max-body-size", "LLM_WORKBENCH_LANG",
+		"Usage: llm-workbench", "start the proxy", "--port", "stop", "/_/llm-proxy",
 	} {
 		if !strings.Contains(string(out), needle) {
 			t.Errorf("English --help missing %q:\n%s", needle, out)
@@ -928,12 +995,12 @@ func TestEnglishBannerAndHelp(t *testing.T) {
 
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
+	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
 	p := startProxy(t, []string{
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
-	}, map[string]string{"LLM_WORKBENCH_LANG": "en"})
+	}, map[string]string{"LANG": "en_US.UTF-8"})
 
 	banner := p.stdout.String()
 	for _, needle := range []string{
@@ -955,7 +1022,7 @@ func TestEnglishBannerAndHelp(t *testing.T) {
 
 	// The page is served in English too: the language tag is the hint the
 	// client-side dictionary reads on the first paint.
-	page := getPage(t, p.base+"/__portal")
+	page := getPage(t, p.base+"/_/llm-proxy")
 	if !strings.Contains(page, `<html lang="en">`) {
 		t.Error("portal page was not seeded with lang=en")
 	}
@@ -963,18 +1030,19 @@ func TestEnglishBannerAndHelp(t *testing.T) {
 		t.Error("portal page still contains the language placeholder")
 	}
 
-	// A rejected --lang is an error, not a silent fallback. The invalid
-	// upstream is only there so a regression exits instead of serving.
-	out, err = exec.Command(binaryPath, "--lang", "fr", "--upstream", "ftp://x", "--no-browser").CombinedOutput()
+	// --lang was removed: it is an unknown flag and exits with code 2.
+	out, err = execCommandEnv([]string{"--lang", "fr"}, map[string]string{"LANG": "en_US.UTF-8"})
 	var exitErr *exec.ExitError
 	if err == nil || !asExitError(err, &exitErr) || exitErr.ExitCode() != 2 {
 		t.Fatalf("--lang fr exit = %v (%s)", err, out)
 	}
-	// The rejected value is reported in the fallback language, so only the
-	// exit code and the value itself are language-independent assertions.
-	if !strings.Contains(string(out), `"fr"`) {
-		t.Errorf("--lang fr output = %s", out)
-	}
+}
+
+// execCommandEnv runs the binary with a de-duplicated environment.
+func execCommandEnv(args []string, overrides map[string]string) ([]byte, error) {
+	cmd := exec.Command(binaryPath, args...)
+	cmd.Env = testEnv(overrides)
+	return cmd.CombinedOutput()
 }
 
 func getPage(t *testing.T, url string) string {
@@ -998,8 +1066,8 @@ func TestLanguageSwitchThroughPortal(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
+	writeConfig(t, configPath, fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
 	p := startProxy(t, []string{
-		"--upstream", up.server.URL,
 		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
@@ -1010,7 +1078,7 @@ func TestLanguageSwitchThroughPortal(t *testing.T) {
 		t.Fatalf("initial lang = %v, want zh", state["lang"])
 	}
 
-	status, data := postRaw(t, p.base+"/__portal/api/config", `{"lang":"en"}`)
+	status, data := postRaw(t, p.base+"/_/llm-proxy/api/config", `{"lang":"en"}`)
 	if status != http.StatusOK {
 		t.Fatalf("config save status = %d: %s", status, data)
 	}
@@ -1031,7 +1099,7 @@ func TestLanguageSwitchThroughPortal(t *testing.T) {
 		t.Errorf("config file has no lang: %s", raw)
 	}
 
-	if page := getPage(t, p.base+"/__portal"); !strings.Contains(page, `<html lang="en">`) {
+	if page := getPage(t, p.base+"/_/llm-proxy"); !strings.Contains(page, `<html lang="en">`) {
 		t.Error("page did not switch to lang=en")
 	}
 
@@ -1044,7 +1112,7 @@ func TestLanguageSwitchThroughPortal(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		logs := getPage(t, p.base+"/__portal/api/log?since=0")
+		logs := getPage(t, p.base+"/_/llm-proxy/api/log?since=0")
 		if strings.Contains(logs, "invalid request path") {
 			break
 		}
@@ -1063,14 +1131,13 @@ func TestLanguageSwitchThroughPortal(t *testing.T) {
 func TestThinkingAndSystemPromptEndToEnd(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
+	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(
+		`{"upstream": %q, "params": {}, "thinking": "passthrough", "system_prompt": {"mode": "inject-if-missing", "text": "be terse"}}`,
+		up.server.URL))
 	p := startProxy(t, []string{
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
-		"--no-defaults",
-		"--thinking", "passthrough",
-		"--system-prompt", "be terse",
 	}, nil)
 
 	_, echo := postJSON(t, p.base, "/v1/chat/completions",
@@ -1116,12 +1183,12 @@ func TestThinkingAndSystemPromptEndToEnd(t *testing.T) {
 func TestInspectorCapturesThroughBinary(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
+	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(
+		`{"upstream": %q, "inspector": {"capture_bodies": true}}`, up.server.URL))
 	p := startProxy(t, []string{
-		"--upstream", up.server.URL,
-		"--config", filepath.Join(dir, "config.json"),
+		"--config", configPath,
 		"--log", filepath.Join(dir, "proxy.log"),
 		"--db", filepath.Join(dir, "workbench.db"),
-		"--capture-bodies",
 	}, nil)
 
 	// Metadata is captured even without bodies; this test asks for both.
@@ -1137,7 +1204,7 @@ func TestInspectorCapturesThroughBinary(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		body := getPage(t, p.base+"/__workbench/api/requests")
+		body := getPage(t, p.base+"/_/workbench/api/requests")
 		if err := json.Unmarshal([]byte(body), &list); err != nil {
 			t.Fatalf("list JSON: %v\n%s", err, body)
 		}
@@ -1157,7 +1224,7 @@ func TestInspectorCapturesThroughBinary(t *testing.T) {
 		t.Error("list response leaked bodies")
 	}
 
-	detail := getPage(t, p.base+"/__workbench/api/requests/"+id)
+	detail := getPage(t, p.base+"/_/workbench/api/requests/"+id)
 	var record map[string]any
 	if err := json.Unmarshal([]byte(detail), &record); err != nil {
 		t.Fatalf("detail JSON: %v\n%s", err, detail)
@@ -1173,12 +1240,12 @@ func TestInspectorCapturesThroughBinary(t *testing.T) {
 	}
 
 	// The UI shell is served from the embedded build.
-	page := getPage(t, p.base+"/__workbench/")
+	page := getPage(t, p.base+"/_/workbench/")
 	if !strings.Contains(page, `<div id="root">`) {
 		t.Errorf("workbench page missing root: %s", page)
 	}
 
-	request, err := http.NewRequest(http.MethodDelete, p.base+"/__workbench/api/requests/"+id, nil)
+	request, err := http.NewRequest(http.MethodDelete, p.base+"/_/workbench/api/requests/"+id, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1190,89 +1257,8 @@ func TestInspectorCapturesThroughBinary(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("delete status = %d", resp.StatusCode)
 	}
-	detail = getPage(t, p.base+"/__workbench/api/requests/"+id)
+	detail = getPage(t, p.base+"/_/workbench/api/requests/"+id)
 	if !strings.Contains(detail, "not found") {
 		t.Errorf("detail after delete = %s", detail)
-	}
-}
-
-// TestMigrateCopiesLegacyConfig covers the rename migration: the old config
-// is copied to the new path, the old file is kept, and the command is
-// idempotent.
-func TestMigrateCopiesLegacyConfig(t *testing.T) {
-	home := t.TempDir()
-	legacyPaths := []string{
-		filepath.Join(home, "Library", "Application Support", "ollama-nothink-proxy", "config.json"),
-		filepath.Join(home, ".config", "ollama-nothink-proxy", "config.json"),
-	}
-	for _, path := range legacyPaths {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(`{"params":{"temperature":0.42}}`), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	newPath := filepath.Join(home, "new", "config.json")
-	env := map[string]string{
-		"HOME":            home,
-		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
-		"XDG_STATE_HOME":  filepath.Join(home, ".state"),
-	}
-	runMigrate := func() []byte {
-		t.Helper()
-		cmd := exec.Command(binaryPath, "migrate", "--config", newPath)
-		cmd.Env = testEnv(env)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("migrate: %v\n%s", err, out)
-		}
-		return out
-	}
-
-	out := runMigrate()
-	if !strings.Contains(string(out), "已把旧配置复制到") {
-		t.Errorf("migrate output = %s", out)
-	}
-	data, err := os.ReadFile(newPath)
-	if err != nil {
-		t.Fatalf("new config: %v", err)
-	}
-	if !strings.Contains(string(data), "0.42") {
-		t.Errorf("new config = %s", data)
-	}
-	for _, path := range legacyPaths {
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("legacy config was removed: %s: %v", path, err)
-		}
-	}
-
-	// A second run must not overwrite the destination.
-	if err := os.WriteFile(newPath, []byte(`{"params":{"temperature":0.1}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out = runMigrate()
-	if !strings.Contains(string(out), "新配置已存在") {
-		t.Errorf("second migrate output = %s", out)
-	}
-	data, _ = os.ReadFile(newPath)
-	if !strings.Contains(string(data), "0.1") {
-		t.Errorf("destination overwritten: %s", data)
-	}
-
-	// The old LaunchAgent is reported, never removed automatically.
-	legacyPlist := filepath.Join(home, "Library", "LaunchAgents", "com.github.ollama-nothink-proxy.plist")
-	if err := os.MkdirAll(filepath.Dir(legacyPlist), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacyPlist, []byte("<plist/>"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out = runMigrate()
-	if !strings.Contains(string(out), "旧 LaunchAgent") || !strings.Contains(string(out), legacyPlist) {
-		t.Errorf("migrate did not report the old LaunchAgent:\n%s", out)
-	}
-	if _, err := os.Stat(legacyPlist); err != nil {
-		t.Errorf("migrate removed the old LaunchAgent: %v", err)
 	}
 }

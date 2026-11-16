@@ -1,26 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { deleteRequest, exportURL, getRequest, listRequests } from "./api";
-import type { Filters, Health, RequestDetail, RequestList, RequestSummary } from "./types";
+import TokenUsage from "./components/TokenUsage";
+import { useI18n } from "./i18n";
+import type { Filters, Health, RequestDetail, RequestList } from "./types";
 
 const initialFilters: Filters = { q: "", source: "", status: "", limit: 100, offset: 0 };
 type Tab = "request" | "forwarded" | "response" | "raw";
 
-function formatTime(value?: string): string {
+function formatTime(value: string | undefined, lang: string): string {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return date.toLocaleString(lang === "zh" ? "zh-CN" : "en-US");
 }
 
 function formatDuration(ms?: number): string {
   if (!ms || ms < 0) return "—";
   if (ms < 1000) return `${ms} ms`;
   return `${(ms / 1000).toFixed(2)} s`;
-}
-
-function formatTokens(summary: RequestSummary): string {
-  if (summary.total_tokens == null) return "—";
-  return `${summary.prompt_tokens ?? "?"} / ${summary.completion_tokens ?? "?"} / ${summary.total_tokens}`;
 }
 
 function pretty(value?: string): string {
@@ -47,6 +44,7 @@ type Props = {
 };
 
 export default function RequestsPage({ selected, onSelect, health, onCreateExperiment }: Props) {
+  const { lang, t } = useI18n();
   const [filters, setFilters] = useState<Filters>(initialFilters);
   const [list, setList] = useState<RequestList>({ items: [], total: 0, limit: 100, offset: 0 });
   const [detail, setDetail] = useState<RequestDetail | null>(null);
@@ -112,7 +110,7 @@ export default function RequestsPage({ selected, onSelect, health, onCreateExper
 
   async function removeSelected() {
     if (!detail) return;
-    if (!window.confirm(`Delete ${detail.id}?`)) return;
+    if (!window.confirm(t("requests.confirmDelete", { id: detail.id }))) return;
     try {
       await deleteRequest(detail.id);
       onSelect(null);
@@ -123,52 +121,59 @@ export default function RequestsPage({ selected, onSelect, health, onCreateExper
     }
   }
 
-
-
   function changeFilters(patch: Partial<Filters>) {
     setFilters((current) => ({ ...current, ...patch, offset: patch.offset ?? 0 }));
   }
+
+  const tabs: Array<{ id: Tab; label: string }> = [
+    { id: "request", label: t("requests.tabRequest") },
+    { id: "forwarded", label: t("requests.tabForwarded") },
+    { id: "response", label: t("requests.tabResponse") },
+    { id: "raw", label: t("requests.tabRaw") },
+  ];
 
   return (
     <>
       <div className="toolbar">
         <input
           className="search"
-          placeholder="Search prompt, model, body…"
+          placeholder={t("requests.search")}
           value={filters.q}
           onChange={(event) => changeFilters({ q: event.target.value })}
         />
         <select value={filters.source} onChange={(event) => changeFilters({ source: event.target.value })}>
-          <option value="">all sources</option>
+          <option value="">{t("requests.sourceAll")}</option>
           <option value="proxy">proxy</option>
           <option value="playground">playground</option>
           <option value="experiment">experiment</option>
         </select>
         <input
           className="status-input"
-          placeholder="status"
+          placeholder={t("requests.statusHint")}
           value={filters.status}
           onChange={(event) => changeFilters({ status: event.target.value })}
         />
         <label className="live">
           <input type="checkbox" checked={live} onChange={(event) => setLive(event.target.checked)} />
-          live
+          {t("requests.live")}
         </label>
         <button onClick={() => void refresh()} disabled={loading}>
-          {loading ? "loading…" : "refresh"}
+          {loading ? t("common.loading") : t("action.refresh")}
         </button>
         <a className="button" href={exportHref} download>
-          export
+          {t("action.export")}
         </a>
       </div>
 
       {error ? <div className="error">{error}</div> : null}
 
-      <main className="content">
-        <section className="list-panel">
-          <div className="list-head">
-            <span>{list.total} matching</span>
-            <span>
+      <main className="requests">
+        <section className="panel list-panel">
+          <div className="panel-head">
+            <h2>{t("nav.requests")}</h2>
+            <span className="aside-note">{t("requests.matching", { n: list.total })}</span>
+            <span className="spacer" />
+            <span className="chip">
               {list.total === 0
                 ? "0"
                 : `${list.offset + 1}–${Math.min(list.offset + list.items.length, list.total)}`}
@@ -178,13 +183,13 @@ export default function RequestsPage({ selected, onSelect, health, onCreateExper
             <table>
               <thead>
                 <tr>
-                  <th>time</th>
-                  <th>model</th>
-                  <th>endpoint</th>
-                  <th>status</th>
-                  <th>latency</th>
-                  <th>ttft</th>
-                  <th>tokens</th>
+                  <th>{t("common.time")}</th>
+                  <th>{t("common.model")}</th>
+                  <th>{t("common.endpoint")}</th>
+                  <th>{t("common.status")}</th>
+                  <th>{t("common.latency")}</th>
+                  <th>{t("common.ttft")}</th>
+                  <th>{t("common.tokens")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -197,7 +202,7 @@ export default function RequestsPage({ selected, onSelect, health, onCreateExper
                       setTab("request");
                     }}
                   >
-                    <td className="mono">{formatTime(item.created_at)}</td>
+                    <td className="mono">{formatTime(item.created_at, lang)}</td>
                     <td>
                       <div className="model">{item.model || "—"}</div>
                       <div className="subtle">
@@ -214,13 +219,19 @@ export default function RequestsPage({ selected, onSelect, health, onCreateExper
                     </td>
                     <td className="mono">{formatDuration(item.duration_ms)}</td>
                     <td className="mono">{formatDuration(item.ttft_ms)}</td>
-                    <td className="mono small">{formatTokens(item)}</td>
+                    <td className="mono small">
+                      <TokenUsage
+                        prompt={item.prompt_tokens}
+                        completion={item.completion_tokens}
+                        total={item.total_tokens}
+                      />
+                    </td>
                   </tr>
                 ))}
                 {list.items.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="empty">
-                      No requests recorded yet. Use the Playground or point a client at this proxy.
+                      {t("requests.empty")}
                     </td>
                   </tr>
                 ) : null}
@@ -232,72 +243,83 @@ export default function RequestsPage({ selected, onSelect, health, onCreateExper
               disabled={filters.offset === 0}
               onClick={() => changeFilters({ offset: Math.max(0, filters.offset - filters.limit) })}
             >
-              previous
+              {t("action.previous")}
             </button>
             <button
               disabled={filters.offset + filters.limit >= list.total}
               onClick={() => changeFilters({ offset: filters.offset + filters.limit })}
             >
-              next
+              {t("action.next")}
             </button>
           </div>
         </section>
 
-        <aside className="detail-panel">
+        <aside className="panel detail-panel">
           {detail ? (
             <>
               <div className="detail-head">
                 <div>
-                  <h2>{detail.model || "request"}</h2>
+                  <h2>{detail.model || t("nav.requests")}</h2>
                   <div className="mono subtle">{detail.id}</div>
                 </div>
                 <div className="detail-actions">
-                  <button className="accent" onClick={() => onCreateExperiment(detail)}>experiment</button>
-                  <button className="danger" onClick={() => void removeSelected()}>delete</button>
+                  <button className="accent" onClick={() => onCreateExperiment(detail)}>
+                    {t("action.experiment")}
+                  </button>
+                  <button className="danger" onClick={() => void removeSelected()}>
+                    {t("action.delete")}
+                  </button>
                 </div>
               </div>
 
               <div className="facts">
-                <div><span>time</span><strong>{formatTime(detail.created_at)}</strong></div>
-                <div><span>source</span><strong>{detail.source}</strong></div>
-                <div><span>endpoint</span><strong className="mono">{detail.endpoint}</strong></div>
-                <div><span>status</span><strong>{detail.status_code ?? "—"}</strong></div>
-                <div><span>duration</span><strong>{formatDuration(detail.duration_ms)}</strong></div>
-                <div><span>ttft</span><strong>{formatDuration(detail.ttft_ms)}</strong></div>
-                <div><span>tokens</span><strong>{formatTokens(detail)}</strong></div>
-                <div><span>client</span><strong>{detail.client || "—"}</strong></div>
+                <div><span>{t("common.time")}</span><strong>{formatTime(detail.created_at, lang)}</strong></div>
+                <div><span>{t("common.source")}</span><strong>{detail.source}</strong></div>
+                <div><span>{t("common.endpoint")}</span><strong className="mono">{detail.endpoint}</strong></div>
+                <div><span>{t("common.status")}</span><strong>{detail.status_code ?? "—"}</strong></div>
+                <div><span>{t("common.duration")}</span><strong>{formatDuration(detail.duration_ms)}</strong></div>
+                <div><span>{t("common.ttft")}</span><strong>{formatDuration(detail.ttft_ms)}</strong></div>
+                <div>
+                  <span>{t("common.tokens")}</span>
+                  <TokenUsage
+                    prompt={detail.prompt_tokens}
+                    completion={detail.completion_tokens}
+                    total={detail.total_tokens}
+                  />
+                </div>
+                <div><span>{t("common.client")}</span><strong>{detail.client || "—"}</strong></div>
               </div>
 
               {detail.error ? <div className="error">{detail.error}</div> : null}
-              {detail.response_truncated ? <div className="notice">Body was truncated at the capture limit.</div> : null}
+              {detail.response_truncated ? <div className="notice">{t("requests.truncated")}</div> : null}
 
               <div className="tabs">
-                {(["request", "forwarded", "response", "raw"] as Tab[]).map((name) => (
-                  <button key={name} className={tab === name ? "active" : ""} onClick={() => setTab(name)}>
-                    {name}
+                {tabs.map((item) => (
+                  <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
+                    {item.label}
                   </button>
                 ))}
               </div>
 
               <pre className="code">
                 {tab === "request"
-                  ? pretty(detail.request_original) || "Body not recorded (inspector.capture_bodies is off)."
+                  ? pretty(detail.request_original) || t("requests.bodyOff")
                   : tab === "forwarded"
-                    ? pretty(detail.request_forwarded) || "Body not recorded."
+                    ? pretty(detail.request_forwarded) || t("requests.bodyMissing")
                     : tab === "response"
-                      ? pretty(detail.response_body) || "Body not recorded."
+                      ? pretty(detail.response_body) || t("requests.bodyMissing")
                       : JSON.stringify(detail, null, 2)}
               </pre>
             </>
           ) : (
             <div className="detail-empty">
-              <h2>Request detail</h2>
-              <p>Select a row to inspect the original request, what was forwarded upstream, and the raw response.</p>
+              <h2>{t("requests.title")}</h2>
+              <p>{t("requests.intro")}</p>
               {health ? (
                 <div className="detail-meta">
-                  <div><span>database</span><code>{health.storage.path}</code></div>
-                  <div><span>written</span>{health.inspector.written}</div>
-                  <div><span>dropped</span>{health.inspector.dropped}</div>
+                  <div><span>{t("requests.database")}</span><code>{health.storage.path}</code></div>
+                  <div><span>{t("requests.written")}</span>{health.inspector.written}</div>
+                  <div><span>{t("requests.dropped")}</span>{health.inspector.dropped}</div>
                 </div>
               ) : null}
             </div>

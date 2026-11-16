@@ -79,7 +79,7 @@ type bannerOptions struct {
 	Note string
 	// Stop is the hint telling the user how to shut this instance down.
 	Stop string
-	// Workbench is the /__workbench URL when the history database is open.
+	// Workbench is the /_/workbench URL when the history database is open.
 	Workbench string
 }
 
@@ -109,17 +109,16 @@ func printBanner(w io.Writer, cfg *config.Config, portalURL string, opts bannerO
 	fmt.Fprintln(w)
 
 	kv("listen", p.link(cfg.ListenURL()))
-	kv("portal", p.link(portalURL))
+	kv("proxy", p.link(portalURL))
 	if opts.Workbench != "" {
 		kv("workbench", p.link(opts.Workbench))
 	}
 	kv("upstream", cfg.Upstream())
 	kv("inject", injectSummary(p, cfg))
 	kv("limits", i18n.T("banner.limits",
-		cfg.MaxConcurrent, humanBytes(cfg.MaxBodySize), shortDuration(cfg.Timeout())))
+		cfg.MaxConcurrent(), humanBytes(cfg.MaxBodySize()), shortDuration(cfg.Timeout())))
 	kv("log", prettyPath(cfg.LogPath))
 	kv("config", prettyPath(cfg.ConfigPath))
-	kv("verbose", verboseLabel(p, cfg.Verbose))
 
 	fmt.Fprintln(w)
 	line("%s %s", p.dim(pad(i18n.T("banner.hintWhere"), hintWidth)), p.dim("→ ")+p.link(portalURL))
@@ -185,13 +184,6 @@ func injectSummary(p paint, cfg *config.Config) string {
 		label = i18n.T("banner.thinkingPass")
 	}
 	return body + " " + p.accent(label)
-}
-
-func verboseLabel(p paint, verbose bool) string {
-	if !verbose {
-		return p.dim(i18n.T("common.off"))
-	}
-	return p.green(i18n.T("common.on")) + p.dim(i18n.T("banner.verboseNote"))
 }
 
 // humanBytes renders a byte budget the way the portal shows it.

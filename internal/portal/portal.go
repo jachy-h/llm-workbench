@@ -1,4 +1,4 @@
-// Package portal serves the local-only /__portal UI: status, live logs,
+// Package portal serves the local-only /_/llm-proxy UI: status, live logs,
 // injection params, macOS login autostart and a shutdown button.
 //
 // The page is embedded into the binary with //go:embed, so a single file is
@@ -22,11 +22,12 @@ import (
 	"github.com/jachy-h/llm-workbench/internal/i18n"
 	"github.com/jachy-h/llm-workbench/internal/logstore"
 	"github.com/jachy-h/llm-workbench/internal/netutil"
+	"github.com/jachy-h/llm-workbench/internal/policy"
 )
 
 const (
 	// Prefix is the mount point of the portal.
-	Prefix = "/__portal"
+	Prefix = "/_/llm-proxy"
 	// MaxBody bounds portal request bodies (config JSON).
 	MaxBody = 256 * 1024
 	// PollMS advertises how often the page polls for new log entries.
@@ -41,11 +42,17 @@ var pageHTML []byte
 
 // Defaults is the built-in configuration shown by "恢复默认".
 type Defaults struct {
-	Host     string                     `json:"host"`
-	Port     int                        `json:"port"`
-	Upstream string                     `json:"upstream"`
-	Timeout  float64                    `json:"timeout"`
-	Params   map[string]json.RawMessage `json:"params"`
+	Host          string                     `json:"host"`
+	Port          int                        `json:"port"`
+	Upstream      string                     `json:"upstream"`
+	Timeout       float64                    `json:"timeout"`
+	Params        map[string]json.RawMessage `json:"params"`
+	Thinking      string                     `json:"thinking"`
+	SystemPrompt  policy.SystemPrompt        `json:"system_prompt"`
+	Inspector     config.InspectorSettings   `json:"inspector"`
+	Storage       config.StorageSettings     `json:"storage"`
+	MaxConcurrent int                        `json:"max_concurrent"`
+	MaxBodySize   int64                      `json:"max_body_size"`
 }
 
 // Options wires the portal to the running proxy.
@@ -117,29 +124,43 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) bool {
 // DefaultsFor builds the "restore defaults" payload from built-in constants.
 func DefaultsFor() Defaults {
 	return Defaults{
-		Host:     config.DefaultHost,
-		Port:     config.DefaultPort,
-		Upstream: config.DefaultUpstream,
-		Timeout:  config.DefaultTimeout.Seconds(),
-		Params:   config.DefaultParams(),
+		Host:          config.DefaultHost,
+		Port:          config.DefaultPort,
+		Upstream:      config.DefaultUpstream,
+		Timeout:       config.DefaultTimeout.Seconds(),
+		Params:        config.DefaultParams(),
+		Thinking:      string(policy.ThinkingOff),
+		SystemPrompt:  policy.SystemPrompt{Mode: policy.SystemPromptOff},
+		Inspector:     config.DefaultInspectorSettings(),
+		Storage:       config.DefaultStorageSettings(),
+		MaxConcurrent: config.DefaultMaxConcurrent,
+		MaxBodySize:   config.DefaultMaxBodySize,
 	}
 }
 
 type stateResponse struct {
-	Version     string                     `json:"version"`
-	PID         int                        `json:"pid"`
-	Listen      string                     `json:"listen"`
-	Upstream    string                     `json:"upstream"`
-	Timeout     float64                    `json:"timeout"`
-	Params      map[string]json.RawMessage `json:"params"`
-	LogPath     string                     `json:"log_path"`
-	LogCapacity int                        `json:"log_capacity"`
-	ConfigPath  string                     `json:"config_path"`
-	LaunchReady bool                       `json:"launch_ready"`
-	Stopping    bool                       `json:"stopping"`
-	Lang        string                     `json:"lang"`
-	Defaults    Defaults                   `json:"defaults"`
-	Autostart   autostart.State            `json:"autostart"`
+	Version       string                     `json:"version"`
+	PID           int                        `json:"pid"`
+	Listen        string                     `json:"listen"`
+	Upstream      string                     `json:"upstream"`
+	Timeout       float64                    `json:"timeout"`
+	Params        map[string]json.RawMessage `json:"params"`
+	Thinking      string                     `json:"thinking"`
+	SystemPrompt  policy.SystemPrompt        `json:"system_prompt"`
+	Profiles      map[string]policy.Profile  `json:"profiles"`
+	Profile       string                     `json:"profile"`
+	Inspector     config.InspectorSettings   `json:"inspector"`
+	Storage       config.StorageSettings     `json:"storage"`
+	MaxConcurrent int                        `json:"max_concurrent"`
+	MaxBodySize   int64                      `json:"max_body_size"`
+	LogPath       string                     `json:"log_path"`
+	LogCapacity   int                        `json:"log_capacity"`
+	ConfigPath    string                     `json:"config_path"`
+	LaunchReady   bool                       `json:"launch_ready"`
+	Stopping      bool                       `json:"stopping"`
+	Lang          string                     `json:"lang"`
+	Defaults      Defaults                   `json:"defaults"`
+	Autostart     autostart.State            `json:"autostart"`
 }
 
 type autostartResponse struct {
@@ -163,20 +184,28 @@ func (h *Handler) state() stateResponse {
 	cfg := h.opts.Config
 	snap := cfg.Snapshot()
 	return stateResponse{
-		Version:     h.opts.Version,
-		PID:         h.opts.PID,
-		Listen:      h.opts.Listen,
-		Upstream:    snap.Upstream,
-		Timeout:     snap.Timeout.Seconds(),
-		Params:      snap.Params,
-		LogPath:     cfg.LogPath,
-		LogCapacity: h.logCapacity(),
-		ConfigPath:  cfg.ConfigPath,
-		LaunchReady: h.launchReady(),
-		Stopping:    h.stopping(),
-		Lang:        cfg.Lang().String(),
-		Defaults:    h.opts.Defaults,
-		Autostart:   autostart.StateNow(),
+		Version:       h.opts.Version,
+		PID:           h.opts.PID,
+		Listen:        h.opts.Listen,
+		Upstream:      snap.Upstream,
+		Timeout:       snap.Timeout.Seconds(),
+		Params:        snap.Params,
+		Thinking:      string(snap.Thinking),
+		SystemPrompt:  snap.SystemPrompt,
+		Profiles:      snap.Profiles,
+		Profile:       snap.Profile,
+		Inspector:     snap.Inspector,
+		Storage:       snap.Storage,
+		MaxConcurrent: snap.MaxConcurrent,
+		MaxBodySize:   snap.MaxBodySize,
+		LogPath:       cfg.LogPath,
+		LogCapacity:   h.logCapacity(),
+		ConfigPath:    cfg.ConfigPath,
+		LaunchReady:   h.launchReady(),
+		Stopping:      h.stopping(),
+		Lang:          cfg.Lang().String(),
+		Defaults:      h.opts.Defaults,
+		Autostart:     autostart.StateNow(),
 	}
 }
 

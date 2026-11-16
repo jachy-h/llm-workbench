@@ -1,4 +1,4 @@
-// Package workbench serves the local /__workbench API and UI.
+// Package workbench serves the local /_/workbench API and UI.
 package workbench
 
 import (
@@ -30,7 +30,7 @@ import (
 
 // Prefix is the reserved workbench route. Everything outside it proxies to
 // the upstream.
-const Prefix = "/__workbench"
+const Prefix = "/_/workbench"
 
 // Options wires the workbench to the running process.
 type Options struct {

@@ -1,15 +1,14 @@
-// Package config resolves the proxy configuration from defaults, the
-// config file, environment variables and command line flags, and exposes the
-// few settings the portal can change at runtime.
+// Package config resolves the proxy configuration from built-in defaults, the
+// config file and the small set of CLI bootstrap flags, and exposes the
+// settings the portal can change at runtime.
 //
-// Precedence (highest last): built-in defaults < config file < environment
-// (PORT / UPSTREAM / PROXY_PARAMS) < CLI flags. Injection params follow the
-// same order, with --no-defaults emptying the built-in base first.
+// Precedence (highest last): built-in defaults < config file < CLI flags.
+// Injection params follow the same order; --set overlays the resolved base.
 //
-// The output language is resolved here too (--lang > LLM_WORKBENCH_LANG > config file >
-// system locale) and applied to the i18n package, so every message printed
-// after Parse comes out in the chosen language — including Parse's own
-// errors, because the language is settled before the flags are read.
+// The output language is resolved here too (config file > system locale) and
+// applied to the i18n package, so every message printed after Parse comes out
+// in the chosen language — including Parse's own errors, because the language
+// is settled before the flags are read.
 package config
 
 import (
@@ -40,8 +39,15 @@ const (
 
 	DefaultUpstream = "http://127.0.0.1:11434"
 	DefaultHost     = "127.0.0.1"
-	DefaultPort     = 11500
-	DefaultTimeout  = 600 * time.Second
+	// DefaultPort is the listen port. It is deliberately not 11434: that is
+	// Ollama's port (the default upstream), so listening there can only fail
+	// with "address already in use".
+	DefaultPort    = 11500
+	DefaultTimeout = 600 * time.Second
+
+	// OllamaPort is the port the default upstream listens on. The proxy never
+	// listens there, not even when an old config file says so.
+	OllamaPort = 11434
 
 	// DefaultMaxConcurrent bounds requests that are in flight at once.
 	DefaultMaxConcurrent = 8
@@ -53,10 +59,6 @@ const (
 	// DefaultRetentionDays and DefaultMaxRows bound request history.
 	DefaultRetentionDays = 14
 	DefaultMaxRows       = 5000
-
-	// LegacyDir is the pre-rename application directory. It is only read by
-	// the migration path and the first-run fallback; new files never go here.
-	LegacyDir = "ollama-nothink-proxy"
 )
 
 // InspectorSettings controls request history capture.
@@ -94,47 +96,55 @@ func DefaultParams() map[string]json.RawMessage {
 
 // Snapshot is a consistent copy of the runtime-mutable settings.
 type Snapshot struct {
-	Upstream     string
-	UpstreamURL  *url.URL
-	Timeout      time.Duration
-	Params       map[string]json.RawMessage
-	Lang         i18n.Lang
-	Thinking     policy.ThinkingMode
-	SystemPrompt policy.SystemPrompt
-	Profiles     map[string]policy.Profile
-	Profile      string
-	Extra        map[string]json.RawMessage
-	Inspector    InspectorSettings
-	Storage      StorageSettings
+	Upstream      string
+	UpstreamURL   *url.URL
+	Timeout       time.Duration
+	Params        map[string]json.RawMessage
+	Lang          i18n.Lang
+	Thinking      policy.ThinkingMode
+	SystemPrompt  policy.SystemPrompt
+	Profiles      map[string]policy.Profile
+	Profile       string
+	Extra         map[string]json.RawMessage
+	Inspector     InspectorSettings
+	Storage       StorageSettings
+	MaxConcurrent int
+	MaxBodySize   int64
 }
 
 // Config is the fully resolved runtime configuration.
 type Config struct {
 	// Startup-only settings (the portal cannot change these).
-	Host          string
-	Port          int
-	ConfigPath    string
-	LogPath       string
-	Verbose       bool
-	MaxConcurrent int
-	MaxBodySize   int64
-	Foreground    bool
-	OpenBrowser   bool
+	Host        string
+	Port        int
+	ConfigPath  string
+	LogPath     string
+	Foreground  bool
+	OpenBrowser bool
+	// MigratedFrom is the legacy config file this run imported, empty when
+	// there was nothing to migrate.
+	MigratedFrom string
+	// PortRequested is the listen port the file or the flag asked for when it
+	// could not be used (Ollama's port, or the upstream's own); Port holds the
+	// port that is used instead.
+	PortRequested int
 
 	// Runtime-mutable settings, guarded by mu.
-	mu           sync.RWMutex
-	upstream     string
-	upstreamURL  *url.URL
-	timeout      time.Duration
-	params       map[string]json.RawMessage
-	lang         i18n.Lang
-	thinking     policy.ThinkingMode
-	systemPrompt policy.SystemPrompt
-	profiles     map[string]policy.Profile
-	profile      string
-	extra        map[string]json.RawMessage
-	inspector    InspectorSettings
-	storage      StorageSettings
+	mu            sync.RWMutex
+	upstream      string
+	upstreamURL   *url.URL
+	timeout       time.Duration
+	params        map[string]json.RawMessage
+	lang          i18n.Lang
+	thinking      policy.ThinkingMode
+	systemPrompt  policy.SystemPrompt
+	profiles      map[string]policy.Profile
+	profile       string
+	extra         map[string]json.RawMessage
+	inspector     InspectorSettings
+	storage       StorageSettings
+	maxConcurrent int
+	maxBodySize   int64
 }
 
 // Lang is the language of CLI output, log lines, portal messages and the
@@ -231,6 +241,20 @@ func (c *Config) Storage() StorageSettings {
 	return c.storage
 }
 
+// MaxConcurrent bounds requests in flight.
+func (c *Config) MaxConcurrent() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.maxConcurrent
+}
+
+// MaxBodySize bounds bodies read for JSON injection.
+func (c *Config) MaxBodySize() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.maxBodySize
+}
+
 // Profiles returns a copy of the configured profiles.
 func (c *Config) Profiles() map[string]policy.Profile {
 	c.mu.RLock()
@@ -243,18 +267,20 @@ func (c *Config) Snapshot() Snapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return Snapshot{
-		Upstream:     c.upstream,
-		UpstreamURL:  c.upstreamURL,
-		Timeout:      c.timeout,
-		Params:       cloneParams(c.params),
-		Lang:         c.lang,
-		Thinking:     c.thinking,
-		SystemPrompt: c.systemPrompt,
-		Profiles:     cloneProfiles(c.profiles),
-		Profile:      c.profile,
-		Extra:        cloneParams(c.extra),
-		Inspector:    c.inspector,
-		Storage:      c.storage,
+		Upstream:      c.upstream,
+		UpstreamURL:   c.upstreamURL,
+		Timeout:       c.timeout,
+		Params:        cloneParams(c.params),
+		Lang:          c.lang,
+		Thinking:      c.thinking,
+		SystemPrompt:  c.systemPrompt,
+		Profiles:      cloneProfiles(c.profiles),
+		Profile:       c.profile,
+		Extra:         cloneParams(c.extra),
+		Inspector:     c.inspector,
+		Storage:       c.storage,
+		MaxConcurrent: c.maxConcurrent,
+		MaxBodySize:   c.maxBodySize,
 	}
 }
 
@@ -298,7 +324,7 @@ func (c *Config) ParamSummary() string {
 // Document is the JSON shape written to the config file.
 func (c *Config) Document() map[string]any {
 	snap := c.Snapshot()
-	document := make(map[string]any, len(snap.Extra)+9)
+	document := make(map[string]any, len(snap.Extra)+11)
 	for key, value := range snap.Extra {
 		document[key] = value
 	}
@@ -314,6 +340,8 @@ func (c *Config) Document() map[string]any {
 	document["profile"] = snap.Profile
 	document["inspector"] = snap.Inspector
 	document["storage"] = snap.Storage
+	document["max_concurrent"] = snap.MaxConcurrent
+	document["max_body_size"] = snap.MaxBodySize
 	return document
 }
 
@@ -336,6 +364,8 @@ func (c *Config) Apply(payload map[string]json.RawMessage) error {
 	extra := snap.Extra
 	inspectorSettings := snap.Inspector
 	storageSettings := snap.Storage
+	maxConcurrent := snap.MaxConcurrent
+	maxBodySize := snap.MaxBodySize
 
 	if raw, ok := payload["upstream"]; ok {
 		value, ok := decodeString(raw)
@@ -421,6 +451,21 @@ func (c *Config) Apply(payload map[string]json.RawMessage) error {
 		storageSettings = next
 	}
 
+	if raw, ok := payload["max_concurrent"]; ok {
+		value, ok := decodeInt(raw)
+		if !ok || value < 1 {
+			return fmt.Errorf(i18n.T("cfg.errMaxConcurrentValue"), bytes.TrimSpace(raw))
+		}
+		maxConcurrent = value
+	}
+	if raw, ok := payload["max_body_size"]; ok {
+		value, ok := decodeFloat(raw)
+		if !ok || value < 1 {
+			return fmt.Errorf(i18n.T("cfg.errMaxBodySizeValue"), bytes.TrimSpace(raw))
+		}
+		maxBodySize = int64(value)
+	}
+
 	if raw, ok := payload["lang"]; ok {
 		value, ok := decodeString(raw)
 		if !ok {
@@ -450,13 +495,16 @@ func (c *Config) Apply(payload map[string]json.RawMessage) error {
 	document["profile"] = profile
 	document["inspector"] = inspectorSettings
 	document["storage"] = storageSettings
+	document["max_concurrent"] = maxConcurrent
+	document["max_body_size"] = maxBodySize
 
 	// Preserve keys this build does not understand (for example settings
 	// written by a newer version). Known keys are normalized above.
 	for key, value := range payload {
 		switch key {
 		case "host", "port", "upstream", "timeout", "params", "lang",
-			"thinking", "system_prompt", "profiles", "profile", "inspector", "storage":
+			"thinking", "system_prompt", "profiles", "profile", "inspector", "storage",
+			"max_concurrent", "max_body_size":
 			continue
 		}
 		extra[key] = value
@@ -471,18 +519,26 @@ func (c *Config) Apply(payload map[string]json.RawMessage) error {
 	c.upstream, c.upstreamURL, c.timeout, c.params, c.lang = normalized, parsed, timeout, params, lang
 	c.thinking, c.systemPrompt, c.profiles, c.profile, c.extra = thinking, systemPrompt, profiles, profile, extra
 	c.inspector, c.storage = inspectorSettings, storageSettings
+	c.maxConcurrent, c.maxBodySize = maxConcurrent, maxBodySize
 	c.mu.Unlock()
 	i18n.Set(lang)
 	return nil
 }
 
-// writeConfig writes the document atomically (temp file + rename).
+// writeConfig writes the document atomically (temp file + rename). The file is
+// plain JSON, which every JSONC reader (including this one) accepts.
 func writeConfig(path string, document map[string]any) error {
 	encoded, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return err
 	}
 	encoded = append(encoded, '\n')
+	return writeConfigBytes(path, encoded)
+}
+
+// writeConfigBytes writes already-encoded bytes atomically, creating the
+// directory when it does not exist yet.
+func writeConfigBytes(path string, encoded []byte) error {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
@@ -680,7 +736,8 @@ func extraFrom(raw map[string]json.RawMessage) map[string]json.RawMessage {
 	for key, value := range raw {
 		switch key {
 		case "host", "port", "upstream", "timeout", "params", "lang",
-			"thinking", "system_prompt", "profiles", "profile", "inspector", "storage":
+			"thinking", "system_prompt", "profiles", "profile", "inspector", "storage",
+			"max_concurrent", "max_body_size":
 			continue
 		}
 		out[key] = value
@@ -690,64 +747,39 @@ func extraFrom(raw map[string]json.RawMessage) map[string]json.RawMessage {
 
 // Parse resolves args (without argv[0]) into a Config.
 //
-// getenv is injectable so tests do not depend on the ambient environment;
-// it must report whether a variable is present (PROXY_PARAMS=” differs from
-// an unset PROXY_PARAMS). A nil getenv uses os.LookupEnv.
+// getenv is injectable so tests can pin the system locale; it is only used to
+// detect the language when the config file has none. A nil getenv uses
+// os.LookupEnv.
 func Parse(args []string, getenv func(string) (string, bool)) (*Config, error) {
-	return parseArgs(args, getenv, false)
+	return parseArgs(args, getenv)
 }
 
-// ParseRuntime is Parse for the real CLI: when no --config was given and the
-// new config file does not exist yet, the pre-rename file is read as a
-// fallback. The fallback is read-only; the first Save writes the new path.
+// ParseRuntime is Parse for the real CLI.
 func ParseRuntime(args []string, getenv func(string) (string, bool)) (*Config, error) {
-	return parseArgs(args, getenv, true)
+	return parseArgs(args, getenv)
 }
 
-func parseArgs(args []string, getenv func(string) (string, bool), legacyFallback bool) (*Config, error) {
+func parseArgs(args []string, getenv func(string) (string, bool)) (*Config, error) {
 	if getenv == nil {
 		getenv = os.LookupEnv
 	}
+	// A flag error can happen before the config file is read, so settle the
+	// locale language first; the stored choice replaces it once --config is
+	// known.
+	i18n.Set(i18n.Detect(getenv))
 
 	var (
-		host                 string
-		port                 int
-		portSet              bool
-		upstream             string
-		sets                 []string
-		timeoutSecs          float64
-		timeoutSet           bool
-		configPath           string
-		logPath              string
-		foreground           bool
-		noBrowser            bool
-		noDefaults           bool
-		maxConc              int
-		maxConcSet           bool
-		maxBody              int64
-		maxBodySet           bool
-		verbose              bool
-		showVersion          bool
-		langFlag             string
-		thinkingFlag         string
-		systemPromptFlag     string
-		systemPromptFile     string
-		systemPromptOverride bool
-		profileFlag          string
-		noInspector          bool
-		captureBodies        bool
-		dbPath               string
-		retentionDays        int
-		retentionSet         bool
-		maxRows              int
-		maxRowsSet           bool
+		host        string
+		port        int
+		portSet     bool
+		configPath  string
+		logPath     string
+		dbPath      string
+		sets        []string
+		foreground  bool
+		noBrowser   bool
+		showVersion bool
 	)
-
-	// The language has to be settled before the flag parser can complain, so an
-	// invalid flag is reported in the language the user asked for. A bad --lang
-	// value is reported by the real Parse below, once the flag is known.
-	preLang, _ := resolveLang(prescanLang(args), "", getenv)
-	i18n.Set(preLang)
 
 	fs := flag.NewFlagSet("llm-workbench", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -761,69 +793,21 @@ func parseArgs(args []string, getenv func(string) (string, bool), legacyFallback
 		port, portSet = v, true
 		return nil
 	})
-	fs.StringVar(&upstream, "upstream", "", "Ollama address")
 	fs.Func("set", "override an injected param, repeatable (KEY=VALUE)", func(s string) error {
 		sets = append(sets, s)
 		return nil
 	})
-	fs.Func("timeout", "upstream connect/read timeout in seconds", func(s string) error {
-		v, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			return fmt.Errorf(i18n.T("cfg.errTimeoutFlag"), s)
-		}
-		timeoutSecs, timeoutSet = v, true
-		return nil
-	})
 	fs.StringVar(&configPath, "config", "", "config file path")
 	fs.StringVar(&logPath, "log", "", "log file path")
-	fs.StringVar(&langFlag, "lang", "", "output language: zh / en / auto")
-	fs.StringVar(&thinkingFlag, "thinking", "", "thinking mode: off / on / passthrough")
-	fs.StringVar(&systemPromptFlag, "system-prompt", "", "system prompt to inject when missing")
-	fs.StringVar(&systemPromptFile, "system-prompt-file", "", "read the system prompt from a file")
-	fs.BoolVar(&systemPromptOverride, "system-prompt-override", false, "replace existing system messages")
-	fs.StringVar(&profileFlag, "profile", "", "select a named policy profile")
-	fs.BoolVar(&noInspector, "no-inspector", false, "disable request history capture")
-	fs.BoolVar(&captureBodies, "capture-bodies", false, "persist request/response bodies in history")
 	fs.StringVar(&dbPath, "db", "", "SQLite database path")
-	fs.Func("retention-days", "delete history older than N days (0 keeps forever)", func(s string) error {
-		v, err := strconv.Atoi(s)
-		if err != nil {
-			return fmt.Errorf(i18n.T("cfg.errRetentionFlag"), s)
-		}
-		retentionDays, retentionSet = v, true
-		return nil
-	})
-	fs.Func("max-rows", "keep at most N history rows (0 keeps all)", func(s string) error {
-		v, err := strconv.Atoi(s)
-		if err != nil {
-			return fmt.Errorf(i18n.T("cfg.errMaxRowsFlag"), s)
-		}
-		maxRows, maxRowsSet = v, true
-		return nil
-	})
-	fs.BoolVar(&foreground, "foreground", false, "run in the foreground")
-	fs.BoolVar(&foreground, "f", false, "run in the foreground")
-	fs.BoolVar(&noBrowser, "no-browser", false, "do not open the portal page on start")
-	fs.BoolVar(&noDefaults, "no-defaults", false, "inject no built-in generation params")
-	fs.Func("max-concurrent", "max requests in flight", func(s string) error {
-		v, err := strconv.Atoi(s)
-		if err != nil {
-			return fmt.Errorf(i18n.T("cfg.errConcurrentFlag"), s)
-		}
-		maxConc, maxConcSet = v, true
-		return nil
-	})
-	fs.Func("max-body-size", "max bytes of a rewritable request body", func(s string) error {
-		v, err := strconv.ParseInt(s, 10, 64)
-		if err != nil {
-			return fmt.Errorf(i18n.T("cfg.errBodySizeFlag"), s)
-		}
-		maxBody, maxBodySet = v, true
-		return nil
-	})
-	fs.BoolVar(&verbose, "verbose", false, "print one log line per request")
-	fs.BoolVar(&verbose, "v", false, "print one log line per request")
 	fs.BoolVar(&showVersion, "version", false, "print the version")
+	fs.BoolVar(&showVersion, "v", false, "print the version")
+	// Internal flags: the background daemon and the LaunchAgent need a
+	// process that stays attached and must not open a browser. They are not
+	// part of the documented CLI and are deliberately absent from --help.
+	fs.BoolVar(&foreground, "foreground", false, "internal: run in the foreground")
+	fs.BoolVar(&foreground, "f", false, "internal: run in the foreground")
+	fs.BoolVar(&noBrowser, "no-browser", false, "internal: do not open the page")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -835,53 +819,44 @@ func parseArgs(args []string, getenv func(string) (string, bool), legacyFallback
 		return nil, ErrVersionRequested
 	}
 
-	explicitConfig := configPath != ""
+	// Only the default config path migrates: an explicit --config is taken
+	// exactly as given.
+	defaultConfig := configPath == ""
 	configPath = expandPath(configPathOr(configPath))
 	logPath = expandPath(logPathOr(logPath))
+	migratedFrom := ""
+	if defaultConfig {
+		migratedFrom = migrateConfig(configPath)
+	}
 	stored := loadFile(configPath)
-	if legacyFallback && !explicitConfig && !fileExists(configPath) {
-		// First run after the rename: honor the old file without copying it.
-		// Copying is the explicit "migrate" command's job, so a read-only
-		// run never creates files in the new directory.
-		stored = loadFile(LegacyConfigPath())
-	}
 
-	// CLI flag > LLM_WORKBENCH_LANG > config file > locale. envValue folds LLM_WORKBENCH_LANG in
-	// through resolveLang, which reports a bad --lang value as an error.
-	lang, err := resolveLang(langFlag, stored.lang, getenv)
-	if err != nil {
-		return nil, err
-	}
+	lang := resolveLang(stored.lang, getenv)
 	i18n.Set(lang)
 
 	cfg := &Config{
 		Host:          firstNonEmpty(host, stored.host, DefaultHost),
 		ConfigPath:    configPath,
 		LogPath:       logPath,
-		Verbose:       verbose,
-		MaxConcurrent: DefaultMaxConcurrent,
-		MaxBodySize:   DefaultMaxBodySize,
 		Foreground:    foreground,
 		OpenBrowser:   !noBrowser,
-		upstream:      firstNonEmpty(upstream, envValue(getenv, "UPSTREAM"), stored.upstream, DefaultUpstream),
+		upstream:      firstNonEmpty(stored.upstream, DefaultUpstream),
 		timeout:       DefaultTimeout,
+		params:        DefaultParams(),
 		lang:          lang,
 		thinking:      policy.ThinkingOff,
 		systemPrompt:  policy.SystemPrompt{Mode: policy.SystemPromptOff},
 		profiles:      defaultProfiles(),
+		MigratedFrom:  migratedFrom,
 		extra:         extraFrom(stored.raw),
 		inspector:     DefaultInspectorSettings(),
 		storage:       DefaultStorageSettings(),
+		maxConcurrent: DefaultMaxConcurrent,
+		maxBodySize:   DefaultMaxBodySize,
 	}
 
 	cfg.Port = DefaultPort
 	if stored.portSet {
 		cfg.Port = stored.port
-	}
-	if envPort, ok := getenv("PORT"); ok {
-		if v, ok := toleranToInt(envPort); ok {
-			cfg.Port = v
-		}
 	}
 	if portSet {
 		cfg.Port = port
@@ -890,97 +865,47 @@ func parseArgs(args []string, getenv func(string) (string, bool), legacyFallback
 	if stored.timeoutSet {
 		cfg.timeout = durationFromSeconds(stored.timeout)
 	}
-	if timeoutSet {
-		cfg.timeout = durationFromSeconds(timeoutSecs)
+	if stored.maxConcurrentSet {
+		cfg.maxConcurrent = stored.maxConcurrent
+	}
+	if stored.maxBodySizeSet {
+		cfg.maxBodySize = stored.maxBodySize
 	}
 
-	if maxConcSet {
-		cfg.MaxConcurrent = maxConc
-	}
-	if maxBodySet {
-		cfg.MaxBodySize = maxBody
-	}
-
-	params := DefaultParams()
-	if noDefaults {
-		params = map[string]json.RawMessage{}
-	}
 	if stored.paramsSet {
-		params = stored.params
-	}
-	if rawEnv, ok := getenv("PROXY_PARAMS"); ok {
-		parsed, err := parseParamsObject(rawEnv)
-		if err != nil {
-			return nil, err
-		}
-		params = parsed
+		cfg.params = stored.params
 	}
 	for _, item := range sets {
 		key, value, err := parseSet(item)
 		if err != nil {
 			return nil, err
 		}
-		params[key] = value
+		cfg.params[key] = value
 	}
-	cfg.params = params
 
 	if stored.thinkingSet {
 		cfg.thinking = stored.thinking
 	}
-	if thinkingFlag != "" {
-		mode, ok := policy.ParseThinkingMode(thinkingFlag)
-		if !ok {
-			return nil, fmt.Errorf(i18n.T("cfg.errThinking"), thinkingFlag)
-		}
-		cfg.thinking = mode
-	}
-
 	if stored.systemPromptSet {
 		cfg.systemPrompt = stored.systemPrompt
 	}
-	if systemPromptFlag != "" && systemPromptFile != "" {
-		return nil, errors.New(i18n.T("cfg.errSystemPromptBoth"))
-	}
-	if systemPromptFile != "" {
-		data, err := os.ReadFile(expandPath(systemPromptFile))
-		if err != nil {
-			return nil, fmt.Errorf(i18n.T("cfg.errSystemPromptFile"), systemPromptFile, err)
-		}
-		if len(data) > 1<<20 {
-			return nil, fmt.Errorf(i18n.T("cfg.errSystemPromptFile"), systemPromptFile, errors.New("file is larger than 1 MiB"))
-		}
-		cfg.systemPrompt = policy.SystemPrompt{Mode: policy.SystemPromptInjectIfMissing, Text: string(data)}
-	}
-	if systemPromptFlag != "" {
-		cfg.systemPrompt = policy.SystemPrompt{Mode: policy.SystemPromptInjectIfMissing, Text: systemPromptFlag}
-	}
-	if systemPromptOverride {
-		cfg.systemPrompt.Mode = policy.SystemPromptOverride
-	}
-
 	if stored.profilesSet {
 		cfg.profiles = mergeProfiles(stored.profiles)
 	}
-	profile := strings.TrimSpace(firstNonEmpty(profileFlag, stored.profile))
+	profile := strings.TrimSpace(stored.profile)
 	if profile != "" {
 		selected, ok := cfg.profiles[profile]
 		if !ok {
 			return nil, fmt.Errorf(i18n.T("cfg.errProfileUnknown"), profile)
-		} // An explicit --set still wins over a profile, otherwise the flag
-		// would be silently ignored when a profile is selected.
+		}
+		// An explicit --set still wins over the selected profile, otherwise
+		// the flag would be silently ignored whenever a profile is active.
 		for _, item := range sets {
 			key, value, err := parseSet(item)
 			if err != nil {
 				return nil, err
 			}
 			selected.Params[key] = value
-		}
-		// Explicit thinking / system-prompt flags also win over the profile.
-		if thinkingFlag != "" {
-			selected.Thinking = cfg.thinking
-		}
-		if systemPromptFlag != "" || systemPromptFile != "" || systemPromptOverride {
-			selected.SystemPrompt = cfg.systemPrompt
 		}
 		cfg.profiles[profile] = selected
 		cfg.profile = profile
@@ -995,77 +920,34 @@ func parseArgs(args []string, getenv func(string) (string, bool), legacyFallback
 	if dbPath != "" {
 		cfg.storage.Path = expandPath(dbPath)
 	}
-	if noInspector {
-		cfg.inspector.Enabled = false
-	}
-	if captureBodies {
-		cfg.inspector.CaptureBodies = true
-	}
-	if retentionSet {
-		cfg.inspector.RetentionDays = retentionDays
-	}
-	if maxRowsSet {
-		cfg.inspector.MaxRows = maxRows
-	}
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+
+	// A listen port that cannot work is corrected instead of left to fail at
+	// bind time.
+	if fixed, changed := fixPort(cfg.Port, cfg.upstreamURL); changed {
+		cfg.PortRequested = cfg.Port
+		cfg.Port = fixed
+		if !portSet {
+			// The port came from the file: persist the correction so the next
+			// start does not have to fix it again. A failed write is harmless,
+			// this run already uses the fixed value.
+			_ = cfg.Save()
+		}
+	}
 	return cfg, nil
 }
 
-// resolveLang picks the runtime language: an explicit --lang beats LLM_WORKBENCH_LANG,
-// which beats the config file, which beats the locale. Only a bad --lang value
-// is an error; a bad environment or file value just falls through.
-func resolveLang(flagValue, stored string, getenv func(string) (string, bool)) (i18n.Lang, error) {
-	if flagValue != "" && !strings.EqualFold(flagValue, i18n.Auto) {
-		lang, ok := i18n.Parse(flagValue)
-		if !ok {
-			return i18n.ZH, fmt.Errorf(i18n.T("cfg.errLangValue"), flagValue)
-		}
-		return lang, nil
+// resolveLang picks the runtime language: the config file beats the system
+// locale. There is no language environment variable; the portal stores the
+// choice in the config file.
+func resolveLang(stored string, getenv func(string) (string, bool)) i18n.Lang {
+	if lang, ok := i18n.Parse(stored); ok {
+		return lang
 	}
-	if flagValue == "" {
-		if env, ok := lookupLangEnv(getenv); ok && !strings.EqualFold(strings.TrimSpace(env), i18n.Auto) {
-			if lang, ok := i18n.Parse(env); ok {
-				return lang, nil
-			}
-		}
-		if lang, ok := i18n.Parse(stored); ok {
-			return lang, nil
-		}
-	}
-	return i18n.Detect(getenv), nil
-}
-
-// lookupLangEnv reads the new language variable first, then the pre-rename
-// ONP_LANG alias, so existing launch agents and shell profiles keep working.
-func lookupLangEnv(getenv func(string) (string, bool)) (string, bool) {
-	if value, ok := getenv("LLM_WORKBENCH_LANG"); ok {
-		return value, true
-	}
-	return getenv("ONP_LANG")
-}
-
-// prescanLang reads --lang out of args before the flag parser runs, so even a
-// flag error can be reported in the requested language.
-func prescanLang(args []string) string {
-	for index := 0; index < len(args); index++ {
-		arg := args[index]
-		if value, ok := strings.CutPrefix(arg, "--lang="); ok {
-			return value
-		}
-		if arg == "--lang" && index+1 < len(args) {
-			return args[index+1]
-		}
-	}
-	return ""
-}
-
-// envValue returns key's value, or "" when unset.
-func envValue(getenv func(string) (string, bool), key string) string {
-	v, _ := getenv(key)
-	return v
+	return i18n.Detect(getenv)
 }
 
 func (c *Config) validate() error {
@@ -1081,10 +963,10 @@ func (c *Config) validate() error {
 	if c.timeout <= 0 {
 		return errors.New(i18n.T("cfg.errTimeoutPositive"))
 	}
-	if c.MaxConcurrent < 1 {
+	if c.maxConcurrent < 1 {
 		return errors.New(i18n.T("cfg.errMaxConcurrent"))
 	}
-	if c.MaxBodySize < 1 {
+	if c.maxBodySize < 1 {
 		return errors.New(i18n.T("cfg.errMaxBodySize"))
 	}
 	if c.params == nil {
@@ -1122,6 +1004,39 @@ func normalizeUpstream(raw string) (string, *url.URL, error) {
 	return value, parsed, nil
 }
 
+// fixPort keeps the proxy off ports it cannot own: Ollama's port and the port
+// the upstream itself listens on (forwarding to yourself is a loop). It
+// returns the port to listen on and whether it had to change.
+func fixPort(port int, upstream *url.URL) (int, bool) {
+	if port <= 0 || port > 65535 {
+		return port, false // validate reports out-of-range ports
+	}
+	if port != OllamaPort && port != upstreamPort(upstream) {
+		return port, false
+	}
+	if DefaultPort == upstreamPort(upstream) {
+		return port, false // no better port to offer
+	}
+	return DefaultPort, true
+}
+
+// upstreamPort is the port the upstream URL connects to, with the scheme
+// default (80/443) when the URL has none.
+func upstreamPort(upstream *url.URL) int {
+	if upstream == nil {
+		return 0
+	}
+	if p := upstream.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
+	}
+	if upstream.Scheme == "https" {
+		return 443
+	}
+	return 80
+}
+
 // Coerce turns a --set string into a JSON value: valid JSON stays JSON,
 // everything else becomes a string.
 func Coerce(value string) json.RawMessage {
@@ -1148,44 +1063,35 @@ func parseSet(item string) (string, json.RawMessage, error) {
 	return strings.TrimSpace(key), Coerce(strings.TrimSpace(value)), nil
 }
 
-// parseParamsObject parses PROXY_PARAMS. An empty value means "{}" (inject
-// nothing), a non-object is an error.
-func parseParamsObject(raw string) (map[string]json.RawMessage, error) {
-	if strings.TrimSpace(raw) == "" {
-		return map[string]json.RawMessage{}, nil
-	}
-	var out map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &out); err != nil || out == nil {
-		return nil, fmt.Errorf(i18n.T("cfg.errParamsEnv"), raw)
-	}
-	return out, nil
-}
-
 type fileConfig struct {
-	host            string
-	port            int
-	portSet         bool
-	upstream        string
-	timeout         float64
-	timeoutSet      bool
-	params          map[string]json.RawMessage
-	paramsSet       bool
-	lang            string
-	thinking        policy.ThinkingMode
-	thinkingSet     bool
-	systemPrompt    policy.SystemPrompt
-	systemPromptSet bool
-	profiles        map[string]policy.Profile
-	profilesSet     bool
-	profile         string
-	inspector       InspectorSettings
-	inspectorSet    bool
-	storage         StorageSettings
-	storageSet      bool
-	raw             map[string]json.RawMessage
+	host             string
+	port             int
+	portSet          bool
+	upstream         string
+	timeout          float64
+	timeoutSet       bool
+	params           map[string]json.RawMessage
+	paramsSet        bool
+	lang             string
+	thinking         policy.ThinkingMode
+	thinkingSet      bool
+	systemPrompt     policy.SystemPrompt
+	systemPromptSet  bool
+	profiles         map[string]policy.Profile
+	profilesSet      bool
+	profile          string
+	inspector        InspectorSettings
+	inspectorSet     bool
+	storage          StorageSettings
+	storageSet       bool
+	maxConcurrent    int
+	maxConcurrentSet bool
+	maxBodySize      int64
+	maxBodySizeSet   bool
+	raw              map[string]json.RawMessage
 }
 
-// loadFile reads the JSON config file. A missing or corrupt file is treated
+// loadFile reads the JSONC config file. A missing or corrupt file is treated
 // as empty so built-in defaults still apply.
 func loadFile(path string) fileConfig {
 	var fc fileConfig
@@ -1194,7 +1100,7 @@ func loadFile(path string) fileConfig {
 		return fc
 	}
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
+	if err := json.Unmarshal(stripJSONC(data), &raw); err != nil || raw == nil {
 		return fc
 	}
 	fc.raw = raw
@@ -1222,6 +1128,16 @@ func loadFile(path string) fileConfig {
 		var params map[string]json.RawMessage
 		if err := json.Unmarshal(v, &params); err == nil && params != nil {
 			fc.params, fc.paramsSet = params, true
+		}
+	}
+	if v, ok := raw["max_concurrent"]; ok {
+		if n, ok := decodeInt(v); ok && n > 0 {
+			fc.maxConcurrent, fc.maxConcurrentSet = n, true
+		}
+	}
+	if v, ok := raw["max_body_size"]; ok {
+		if n, ok := decodeInt(v); ok && n > 0 {
+			fc.maxBodySize, fc.maxBodySizeSet = int64(n), true
 		}
 	}
 	if v, ok := raw["lang"]; ok {
@@ -1270,6 +1186,14 @@ func decodeString(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+func decodeInt(raw json.RawMessage) (int, bool) {
+	value, ok := decodeFloat(raw)
+	if !ok || value != float64(int(value)) {
+		return 0, false
+	}
+	return int(value), true
 }
 
 func decodeFloat(raw json.RawMessage) (float64, bool) {
@@ -1353,108 +1277,116 @@ func expandPath(path string) string {
 	return abs
 }
 
+// ConfigDir is where the config file lives: ~/.config/llm-workbench on every
+// platform (XDG_CONFIG_HOME wins when it is set). One path for all systems
+// keeps the docs, the autostart plist and the user's habits identical.
+func ConfigDir() string {
+	if base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); base != "" {
+		return filepath.Join(expandPath(base), "llm-workbench")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "llm-workbench")
+}
+
 // DefaultConfigPath is where the config file lives when --config is omitted.
+// The .jsonc suffix is the promise that comments and trailing commas are fine.
 func DefaultConfigPath() string {
-	home, _ := os.UserHomeDir()
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "llm-workbench", "config.json")
-	}
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		base = filepath.Join(home, ".config")
-	}
-	return filepath.Join(base, "llm-workbench", "config.json")
+	return filepath.Join(ConfigDir(), "config.jsonc")
 }
 
-// LegacyConfigPath is the pre-rename config location. It is only read during
-// migration and the first-run fallback.
-func LegacyConfigPath() string {
+// ConfigBackupSuffix is appended to a legacy file once it has been migrated,
+// so the import runs once and the original stays recoverable.
+const ConfigBackupSuffix = ".bak"
+
+// LegacyConfigPaths lists the config files older releases used, in the order
+// they are tried. The first one that exists is imported into the new path.
+func LegacyConfigPaths() []string {
 	home, _ := os.UserHomeDir()
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", LegacyDir, "config.json")
+	support := filepath.Join(home, "Library", "Application Support")
+	return []string{
+		// The pre-JSONC layout in the current directory.
+		filepath.Join(ConfigDir(), "config.json"),
+		// macOS used Application Support up to 0.6.
+		filepath.Join(support, "llm-workbench", "config.json"),
+		// The project used to be called ollama-nothink-proxy.
+		filepath.Join(support, "ollama-nothink-proxy", "config.json"),
 	}
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		base = filepath.Join(home, ".config")
-	}
-	return filepath.Join(base, LegacyDir, "config.json")
 }
 
-// ConfigPathFromArgs returns the --config value without parsing any other
-// flag. It is used by "migrate" before the full parser runs.
-func ConfigPathFromArgs(args []string) string {
-	for index := 0; index < len(args); index++ {
-		if value, ok := strings.CutPrefix(args[index], "--config="); ok {
-			return value
+// migrateConfig imports the first legacy config file into path and returns
+// the source it used, or "" when there was nothing to migrate. An existing
+// config at path always wins: a user who already moved on is not overwritten.
+func migrateConfig(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return ""
+	}
+	for _, legacy := range LegacyConfigPaths() {
+		if filepath.Clean(legacy) == filepath.Clean(path) {
+			continue
 		}
-		if args[index] == "--config" && index+1 < len(args) {
-			return args[index+1]
+		if info, err := os.Stat(legacy); err != nil || info.IsDir() {
+			continue
 		}
+		if err := migrateFile(legacy, path); err != nil {
+			continue
+		}
+		return legacy
 	}
 	return ""
 }
 
-// ConfigMigration describes what ImportLegacyConfig did.
-type ConfigMigration struct {
-	Source      string
-	Destination string
-	Copied      bool
-	// Reason is "copied", "destination_exists" or "source_missing".
-	Reason string
-}
-
-// ImportLegacyConfig copies the pre-rename config to dst when dst is missing.
-// The old file is never removed. A malformed source is an error, so a broken
-// JSON file is reported instead of being copied silently.
-func ImportLegacyConfig(dst string) (ConfigMigration, error) {
-	source := LegacyConfigPath()
-	result := ConfigMigration{Source: source, Destination: dst}
-	if dst == "" {
-		dst = DefaultConfigPath()
-	}
-	dst = expandPath(dst)
-	result.Destination = dst
-	if _, err := os.Stat(dst); err == nil {
-		result.Reason = "destination_exists"
-		return result, nil
-	}
-	data, err := os.ReadFile(source)
+// migrateFile re-encodes the legacy document at path, correcting a listen
+// port that cannot work, then keeps the source as ".bak".
+func migrateFile(legacy, path string) error {
+	data, err := os.ReadFile(legacy)
 	if err != nil {
-		if os.IsNotExist(err) {
-			result.Reason = "source_missing"
-			return result, nil
+		return err
+	}
+	document := map[string]json.RawMessage{}
+	if stripped := stripJSONC(data); len(bytes.TrimSpace(stripped)) > 0 {
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(stripped, &decoded); err != nil {
+			return err
 		}
-		return result, err
-	}
-	var document map[string]json.RawMessage
-	if err := json.Unmarshal(data, &document); err != nil || document == nil {
-		return result, fmt.Errorf("legacy config is not a JSON object: %s", source)
-	}
-	mode := os.FileMode(0o644)
-	if info, err := os.Stat(source); err == nil {
-		mode = info.Mode().Perm()
-	}
-	if dir := filepath.Dir(dst); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return result, err
+		if decoded != nil {
+			document = decoded
 		}
 	}
-	tmp := dst + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return result, err
+	if raw, ok := document["port"]; ok {
+		if port, ok := toleranToInt(string(bytes.TrimSpace(raw))); ok {
+			if fixed, changed := fixPort(port, upstreamFromDocument(document)); changed {
+				document["port"] = json.RawMessage(strconv.Itoa(fixed))
+			}
+		}
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
-		return result, err
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return err
 	}
-	result.Copied = true
-	result.Reason = "copied"
-	return result, nil
+	encoded = append(encoded, '\n')
+	if err := writeConfigBytes(path, encoded); err != nil {
+		return err
+	}
+	return os.Rename(legacy, legacy+ConfigBackupSuffix)
 }
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+// upstreamFromDocument reads the upstream URL out of a not-yet-validated
+// config document; a missing or broken value means "the default upstream".
+func upstreamFromDocument(document map[string]json.RawMessage) *url.URL {
+	raw, ok := document["upstream"]
+	if !ok {
+		parsed, _ := url.Parse(DefaultUpstream)
+		return parsed
+	}
+	value, ok := decodeString(raw)
+	if !ok {
+		return nil
+	}
+	_, parsed, err := normalizeUpstream(value)
+	if err != nil {
+		return nil
+	}
+	return parsed
 }
 
 // DefaultLogPath is where request logs live when --log is omitted.
@@ -1509,11 +1441,12 @@ func DefaultStorageSettings() StorageSettings {
 // normal flags, so `restart --port 11501` restarts on another port.
 const (
 	// CommandServe starts the proxy (the default when no command is given).
+	// "serve" is kept as an undocumented alias for "start".
 	CommandServe = "serve"
+	// CommandStop asks the running instance to shut down.
+	CommandStop = "stop"
 	// CommandRestart stops the running instance and starts a fresh one.
 	CommandRestart = "restart"
-	// CommandMigrate copies the pre-rename config to the new location.
-	CommandMigrate = "migrate"
 )
 
 // SplitCommand pulls an optional leading subcommand off args. Anything it does
@@ -1521,10 +1454,10 @@ const (
 func SplitCommand(args []string) (command string, rest []string) {
 	if len(args) > 0 {
 		switch args[0] {
+		case CommandStop:
+			return CommandStop, args[1:]
 		case CommandRestart:
 			return CommandRestart, args[1:]
-		case CommandMigrate:
-			return CommandMigrate, args[1:]
 		case CommandServe, "start":
 			return CommandServe, args[1:]
 		}
@@ -1537,14 +1470,8 @@ func UsageText() string {
 	return i18n.T("help.usage",
 		DefaultHost,
 		strconv.Itoa(DefaultPort),
-		DefaultUpstream,
-		strconv.Itoa(int(DefaultTimeout.Seconds())),
-		strconv.Itoa(DefaultMaxConcurrent),
-		strconv.FormatInt(DefaultMaxBodySize, 10),
 		DefaultConfigPath(),
 		DefaultLogPath(),
 		DefaultDataPath(),
-		strconv.Itoa(DefaultRetentionDays),
-		strconv.Itoa(DefaultMaxRows),
 	)
 }
