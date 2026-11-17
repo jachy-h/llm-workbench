@@ -191,26 +191,16 @@ func (h *Handler) rewriteChat(r *http.Request, kind inject.Kind) (status int, me
 	return 0, ""
 }
 
-// requestPolicy resolves the per-request profile and thinking override. The
-// X-Workbench-* headers are consumed here and never forwarded upstream.
+// requestPolicy resolves the global request policy. The removed
+// X-Workbench-* control headers are rejected instead of forwarded upstream.
 func (h *Handler) requestPolicy(r *http.Request) (pol policy.Policy, status int, message string) {
-	profile := r.Header.Get("X-Workbench-Profile")
-	thinking := r.Header.Get("X-Workbench-Thinking")
-	r.Header.Del("X-Workbench-Profile")
-	r.Header.Del("X-Workbench-Thinking")
-
-	resolved, ok := h.settings.Policy(profile)
-	if !ok {
-		return policy.Policy{}, http.StatusBadRequest, fmt.Sprintf(i18n.T("proxy.errProfile"), profile)
+	if len(r.Header.Values("X-Workbench-Profile")) > 0 {
+		return policy.Policy{}, http.StatusBadRequest, i18n.T("proxy.errProfileHeader")
 	}
-	if thinking != "" {
-		mode, ok := policy.ParseThinkingMode(thinking)
-		if !ok {
-			return policy.Policy{}, http.StatusBadRequest, fmt.Sprintf(i18n.T("proxy.errThinking"), thinking)
-		}
-		resolved.Thinking = mode
+	if len(r.Header.Values("X-Workbench-Thinking")) > 0 {
+		return policy.Policy{}, http.StatusBadRequest, i18n.T("proxy.errThinkingHeader")
 	}
-	return resolved, 0, ""
+	return h.settings.Policy(), 0, ""
 }
 
 // setRequestBody replaces the body and keeps ContentLength / transfer

@@ -34,17 +34,15 @@ const (
 
 // Defaults is the built-in configuration shown by "恢复默认".
 type Defaults struct {
-	Host          string                     `json:"host"`
-	Port          int                        `json:"port"`
-	Upstream      string                     `json:"upstream"`
-	Timeout       float64                    `json:"timeout"`
-	Params        map[string]json.RawMessage `json:"params"`
-	Thinking      string                     `json:"thinking"`
-	SystemPrompt  policy.SystemPrompt        `json:"system_prompt"`
-	Inspector     config.InspectorSettings   `json:"inspector"`
-	Storage       config.StorageSettings     `json:"storage"`
-	MaxConcurrent int                        `json:"max_concurrent"`
-	MaxBodySize   int64                      `json:"max_body_size"`
+	Host          string                   `json:"host"`
+	Port          int                      `json:"port"`
+	Upstream      string                   `json:"upstream"`
+	Timeout       float64                  `json:"timeout"`
+	Thinking      string                   `json:"thinking"`
+	Inspector     config.InspectorSettings `json:"inspector"`
+	Storage       config.StorageSettings   `json:"storage"`
+	MaxConcurrent int                      `json:"max_concurrent"`
+	MaxBodySize   int64                    `json:"max_body_size"`
 }
 
 // Options wires the portal to the running proxy.
@@ -124,9 +122,7 @@ func DefaultsFor() Defaults {
 		Port:          config.DefaultPort,
 		Upstream:      config.DefaultUpstream,
 		Timeout:       config.DefaultTimeout.Seconds(),
-		Params:        config.DefaultParams(),
 		Thinking:      string(policy.ThinkingOff),
-		SystemPrompt:  policy.SystemPrompt{Mode: policy.SystemPromptOff},
 		Inspector:     config.DefaultInspectorSettings(),
 		Storage:       config.DefaultStorageSettings(),
 		MaxConcurrent: config.DefaultMaxConcurrent,
@@ -135,28 +131,24 @@ func DefaultsFor() Defaults {
 }
 
 type stateResponse struct {
-	Version       string                     `json:"version"`
-	PID           int                        `json:"pid"`
-	Listen        string                     `json:"listen"`
-	Upstream      string                     `json:"upstream"`
-	Timeout       float64                    `json:"timeout"`
-	Params        map[string]json.RawMessage `json:"params"`
-	Thinking      string                     `json:"thinking"`
-	SystemPrompt  policy.SystemPrompt        `json:"system_prompt"`
-	Profiles      map[string]policy.Profile  `json:"profiles"`
-	Profile       string                     `json:"profile"`
-	Inspector     config.InspectorSettings   `json:"inspector"`
-	Storage       config.StorageSettings     `json:"storage"`
-	MaxConcurrent int                        `json:"max_concurrent"`
-	MaxBodySize   int64                      `json:"max_body_size"`
-	LogPath       string                     `json:"log_path"`
-	LogCapacity   int                        `json:"log_capacity"`
-	ConfigPath    string                     `json:"config_path"`
-	LaunchReady   bool                       `json:"launch_ready"`
-	Stopping      bool                       `json:"stopping"`
-	Lang          string                     `json:"lang"`
-	Defaults      Defaults                   `json:"defaults"`
-	Autostart     autostart.State            `json:"autostart"`
+	Version       string                   `json:"version"`
+	PID           int                      `json:"pid"`
+	Listen        string                   `json:"listen"`
+	Upstream      string                   `json:"upstream"`
+	Timeout       float64                  `json:"timeout"`
+	Thinking      string                   `json:"thinking"`
+	Inspector     config.InspectorSettings `json:"inspector"`
+	Storage       config.StorageSettings   `json:"storage"`
+	MaxConcurrent int                      `json:"max_concurrent"`
+	MaxBodySize   int64                    `json:"max_body_size"`
+	LogPath       string                   `json:"log_path"`
+	LogCapacity   int                      `json:"log_capacity"`
+	ConfigPath    string                   `json:"config_path"`
+	LaunchReady   bool                     `json:"launch_ready"`
+	Stopping      bool                     `json:"stopping"`
+	Lang          string                   `json:"lang"`
+	Defaults      Defaults                 `json:"defaults"`
+	Autostart     autostart.State          `json:"autostart"`
 }
 
 type autostartResponse struct {
@@ -185,11 +177,7 @@ func (h *Handler) state() stateResponse {
 		Listen:        h.opts.Listen,
 		Upstream:      snap.Upstream,
 		Timeout:       snap.Timeout.Seconds(),
-		Params:        snap.Params,
 		Thinking:      string(snap.Thinking),
-		SystemPrompt:  snap.SystemPrompt,
-		Profiles:      snap.Profiles,
-		Profile:       snap.Profile,
 		Inspector:     snap.Inspector,
 		Storage:       snap.Storage,
 		MaxConcurrent: snap.MaxConcurrent,

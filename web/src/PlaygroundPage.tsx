@@ -9,7 +9,7 @@ import {
   listProviders,
   updatePrompt,
 } from "./api";
-import SearchSelect from "./components/SearchSelect";
+import Select from "./components/Select";
 import TokenUsage from "./components/TokenUsage";
 import { useI18n } from "./i18n";
 import { toModelOptions } from "./modelOptions";
@@ -300,15 +300,16 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
           <section className="control-section">
             <label>
               {t("playground.provider")}
-              <select value={providerId} onChange={(event) => setProviderId(event.target.value)}>
-                {providers.map((provider) => (
-                  <option key={provider.id} value={provider.id}>{provider.name}</option>
-                ))}
-              </select>
+              <Select
+                value={providerId}
+                onChange={setProviderId}
+                options={providers.map((provider) => ({ value: provider.id, label: provider.name }))}
+              />
             </label>
             <label>
               {t("playground.modelName")}
-              <SearchSelect
+              <Select
+                searchable
                 value={modelId}
                 options={toModelOptions(models)}
                 placeholder={t("playground.modelPlaceholder")}
@@ -321,11 +322,15 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
             </label>
             <label>
               {t("playground.thinking")}
-              <select value={thinkMode} onChange={(event) => setThinkMode(event.target.value as typeof thinkMode)}>
-                <option value="off">{t("playground.thinkingOff")}</option>
-                <option value="on">{t("playground.thinkingOn")}</option>
-                <option value="passthrough">{t("playground.thinkingPassthrough")}</option>
-              </select>
+              <Select
+                value={thinkMode}
+                onChange={(next) => setThinkMode(next as typeof thinkMode)}
+                options={[
+                  { value: "off", label: t("playground.thinkingOff") },
+                  { value: "on", label: t("playground.thinkingOn") },
+                  { value: "passthrough", label: t("playground.thinkingPassthrough") },
+                ]}
+              />
             </label>
           </section>
 
@@ -370,12 +375,14 @@ export default function PlaygroundPage({ onOpenRequest }: Props) {
                 {t("action.delete")}
               </button>
             </div>
-            <select value={promptId} onChange={(event) => loadPrompt(event.target.value)}>
-              <option value="">{t("playground.loadPrompt")}</option>
-              {prompts.map((prompt) => (
-                <option key={prompt.id} value={prompt.id}>{prompt.name}</option>
-              ))}
-            </select>
+            <Select
+              value={promptId}
+              onChange={loadPrompt}
+              options={[
+                { value: "", label: t("playground.loadPrompt") },
+                ...prompts.map((prompt) => ({ value: prompt.id, label: prompt.name })),
+              ]}
+            />
           </section>
         </div>
       </aside>

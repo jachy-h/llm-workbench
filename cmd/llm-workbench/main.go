@@ -1,6 +1,6 @@
 // Command llm-workbench is a local-first LLM proxy and experiment workbench.
-// The proxy forces thinking off and fills in default generation params in
-// front of Ollama, and ships a local portal for status, live logs and settings.
+// The proxy rewrites only thinking-related fields in front of Ollama, and
+// ships a local portal for status, live logs and settings.
 //
 // It runs in the background by default; -f keeps it in the foreground for
 // supervisors such as launchd or systemd. "restart" stops the instance that is
@@ -413,7 +413,7 @@ func runForeground(cfg *config.Config, portalURL, note string, stdout, stderr io
 		Stop:      i18n.T("banner.stopForeground", os.Getpid()),
 		Workbench: cfg.ListenURL() + workbench.Prefix,
 	})
-	logs.Write(i18n.T("cli.logStart", cfg.ListenAddr(), cfg.Upstream(), cfg.ParamSummary()), "ok", "life")
+	logs.Write(i18n.T("cli.logStart", cfg.ListenAddr(), cfg.Upstream(), string(cfg.Thinking())), "ok", "life")
 	if cfg.OpenBrowser {
 		daemon.OpenBrowser(portalURL)
 	}

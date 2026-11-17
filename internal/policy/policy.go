@@ -214,22 +214,6 @@ type Policy struct {
 	Params       map[string]json.RawMessage
 }
 
-// Profile is a named, reusable policy.
-type Profile struct {
-	Thinking     ThinkingMode               `json:"thinking"`
-	SystemPrompt SystemPrompt               `json:"system_prompt"`
-	Params       map[string]json.RawMessage `json:"params"`
-}
-
-// Policy resolves the profile into a runnable policy.
-func (p Profile) Policy() Policy {
-	return Policy{
-		Thinking:     p.Thinking,
-		SystemPrompt: p.SystemPrompt,
-		Params:       cloneParams(p.Params),
-	}
-}
-
 // New returns the historical default: thinking off, no system prompt.
 func New(params map[string]json.RawMessage) Policy {
 	return Policy{

@@ -3,7 +3,6 @@
 
 const base = "/_/llm-proxy/api";
 
-export type PortalParams = Record<string, unknown>;
 
 export type PortalInspector = {
   enabled: boolean;
@@ -30,9 +29,7 @@ export type PortalDefaults = {
   port: number;
   upstream: string;
   timeout: number;
-  params: PortalParams;
   thinking: string;
-  system_prompt: { mode: string; text: string };
   inspector: PortalInspector;
   storage: PortalStorage;
   max_concurrent: number;
@@ -45,11 +42,7 @@ export type PortalState = {
   listen: string;
   upstream: string;
   timeout: number;
-  params: PortalParams;
   thinking: string;
-  system_prompt: { mode: string; text: string };
-  profiles: Record<string, unknown>;
-  profile: string;
   inspector: PortalInspector;
   storage: PortalStorage;
   max_concurrent: number;

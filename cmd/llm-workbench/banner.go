@@ -166,24 +166,17 @@ func isWide(r rune) bool {
 	return false
 }
 
-// injectSummary renders the effective params plus the thinking policy.
+// injectSummary renders the thinking policy. Every other request field is
+// forwarded untouched.
 func injectSummary(p paint, cfg *config.Config) string {
-	resolved, ok := cfg.Policy("")
-	if !ok {
-		resolved = policy.New(cfg.Params())
-	}
-	body := cfg.ParamSummary()
-	if len(resolved.Params) == 0 {
-		body = i18n.T("common.none")
-	}
 	label := i18n.T("banner.forceOff")
-	switch resolved.Thinking {
+	switch cfg.Thinking() {
 	case policy.ThinkingOn:
 		label = i18n.T("banner.thinkingOn")
 	case policy.ThinkingPassthrough:
 		label = i18n.T("banner.thinkingPass")
 	}
-	return body + " " + p.accent(label)
+	return p.accent(label)
 }
 
 // humanBytes renders a byte budget the way the portal shows it.

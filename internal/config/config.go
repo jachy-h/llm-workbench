@@ -3,7 +3,8 @@
 // settings the portal can change at runtime.
 //
 // Precedence (highest last): built-in defaults < config file < CLI flags.
-// Injection params follow the same order; --set overlays the resolved base.
+// The proxy forwards generation params and messages untouched; only the
+// thinking switch is rewritten.
 //
 // The output language is resolved here too (config file > system locale) and
 // applied to the i18n package, so every message printed after Parse comes out
@@ -22,7 +23,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,33 +77,13 @@ type StorageSettings struct {
 // ErrVersionRequested is returned by Parse when --version was given.
 var ErrVersionRequested = errors.New("version requested")
 
-var defaultParams = map[string]json.RawMessage{
-	"temperature": json.RawMessage("0.2"),
-	"top_p":       json.RawMessage("0.9"),
-	"max_tokens":  json.RawMessage("96"),
-	"keep_alive":  json.RawMessage(`"30m"`),
-}
-
-// DefaultParams returns a copy of the built-in injection defaults.
-func DefaultParams() map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(defaultParams))
-	for k, v := range defaultParams {
-		out[k] = v
-	}
-	return out
-}
-
 // Snapshot is a consistent copy of the runtime-mutable settings.
 type Snapshot struct {
 	Upstream      string
 	UpstreamURL   *url.URL
 	Timeout       time.Duration
-	Params        map[string]json.RawMessage
 	Lang          i18n.Lang
 	Thinking      policy.ThinkingMode
-	SystemPrompt  policy.SystemPrompt
-	Profiles      map[string]policy.Profile
-	Profile       string
 	Extra         map[string]json.RawMessage
 	Inspector     InspectorSettings
 	Storage       StorageSettings
@@ -133,12 +113,8 @@ type Config struct {
 	upstream      string
 	upstreamURL   *url.URL
 	timeout       time.Duration
-	params        map[string]json.RawMessage
 	lang          i18n.Lang
 	thinking      policy.ThinkingMode
-	systemPrompt  policy.SystemPrompt
-	profiles      map[string]policy.Profile
-	profile       string
 	extra         map[string]json.RawMessage
 	inspector     InspectorSettings
 	storage       StorageSettings
@@ -175,34 +151,15 @@ func (c *Config) Timeout() time.Duration {
 	return c.timeout
 }
 
-// Params returns a copy of the injection params.
-func (c *Config) Params() map[string]json.RawMessage {
+// Policy resolves the global request policy. The proxy is transparent apart
+// from thinking: generation params and messages are never injected.
+func (c *Config) Policy() policy.Policy {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return cloneParams(c.params)
-}
-
-// Policy resolves the active policy. An empty profile means "the configured
-// default"; a non-empty name must exist, otherwise ok is false.
-func (c *Config) Policy(profile string) (policy.Policy, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	name := strings.TrimSpace(profile)
-	if name == "" {
-		name = c.profile
-	}
-	if name != "" {
-		selected, ok := c.profiles[name]
-		if !ok {
-			return policy.Policy{}, false
-		}
-		return selected.Policy(), true
-	}
 	return policy.Policy{
 		Thinking:     c.thinking,
-		SystemPrompt: c.systemPrompt,
-		Params:       cloneParams(c.params),
-	}, true
+		SystemPrompt: policy.SystemPrompt{Mode: policy.SystemPromptOff},
+	}
 }
 
 // Thinking returns the configured global thinking mode.
@@ -210,20 +167,6 @@ func (c *Config) Thinking() policy.ThinkingMode {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.thinking
-}
-
-// SystemPrompt returns the configured global system prompt.
-func (c *Config) SystemPrompt() policy.SystemPrompt {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.systemPrompt
-}
-
-// ActiveProfile returns the configured default profile name, if any.
-func (c *Config) ActiveProfile() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.profile
 }
 
 // Inspector returns the history capture settings.
@@ -254,13 +197,6 @@ func (c *Config) MaxBodySize() int64 {
 	return c.maxBodySize
 }
 
-// Profiles returns a copy of the configured profiles.
-func (c *Config) Profiles() map[string]policy.Profile {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return cloneProfiles(c.profiles)
-}
-
 // Snapshot returns all mutable settings at once.
 func (c *Config) Snapshot() Snapshot {
 	c.mu.RLock()
@@ -269,13 +205,9 @@ func (c *Config) Snapshot() Snapshot {
 		Upstream:      c.upstream,
 		UpstreamURL:   c.upstreamURL,
 		Timeout:       c.timeout,
-		Params:        cloneParams(c.params),
 		Lang:          c.lang,
 		Thinking:      c.thinking,
-		SystemPrompt:  c.systemPrompt,
-		Profiles:      cloneProfiles(c.profiles),
-		Profile:       c.profile,
-		Extra:         cloneParams(c.extra),
+		Extra:         cloneRaw(c.extra),
 		Inspector:     c.inspector,
 		Storage:       c.storage,
 		MaxConcurrent: c.maxConcurrent,
@@ -298,28 +230,6 @@ func (c *Config) ListenURL() string {
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(c.Port))
 }
 
-// ParamSummary renders params deterministically for the startup banner.
-func (c *Config) ParamSummary() string {
-	resolved, ok := c.Policy("")
-	if !ok {
-		resolved = policy.Policy{Params: c.Params()}
-	}
-	params := resolved.Params
-	if len(params) == 0 {
-		return i18n.T("common.none")
-	}
-	keys := make([]string, 0, len(params))
-	for k := range params {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, k+"="+string(params[k]))
-	}
-	return strings.Join(parts, ", ")
-}
-
 // Document is the JSON shape written to the config file.
 func (c *Config) Document() map[string]any {
 	snap := c.Snapshot()
@@ -331,12 +241,8 @@ func (c *Config) Document() map[string]any {
 	document["port"] = c.Port
 	document["upstream"] = snap.Upstream
 	document["timeout"] = snap.Timeout.Seconds()
-	document["params"] = snap.Params
 	document["lang"] = snap.Lang.String()
 	document["thinking"] = string(snap.Thinking)
-	document["system_prompt"] = snap.SystemPrompt
-	document["profiles"] = snap.Profiles
-	document["profile"] = snap.Profile
 	document["inspector"] = snap.Inspector
 	document["storage"] = snap.Storage
 	document["max_concurrent"] = snap.MaxConcurrent
@@ -353,13 +259,14 @@ func (c *Config) Save() error {
 // live. On error nothing is changed. A "lang" key also switches the runtime
 // language (i18n.Set), so portal log lines and the next plist follow the UI.
 func (c *Config) Apply(payload map[string]json.RawMessage) error {
+	if removed := removedProfileKeys(payload); len(removed) > 0 {
+		return fmt.Errorf(i18n.T("cfg.errProfileRemoved"), strings.Join(removed, ", "))
+	}
+
 	snap := c.Snapshot()
-	upstream, timeout, params := snap.Upstream, snap.Timeout, snap.Params
+	upstream, timeout := snap.Upstream, snap.Timeout
 	lang := snap.Lang
 	thinking := snap.Thinking
-	systemPrompt := snap.SystemPrompt
-	profiles := snap.Profiles
-	profile := snap.Profile
 	extra := snap.Extra
 	inspectorSettings := snap.Inspector
 	storageSettings := snap.Storage
@@ -389,14 +296,6 @@ func (c *Config) Apply(payload map[string]json.RawMessage) error {
 		timeout = durationFromSeconds(seconds)
 	}
 
-	if raw, ok := payload["params"]; ok {
-		var next map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &next); err != nil || next == nil {
-			return errors.New(i18n.T("cfg.errParamsObject"))
-		}
-		params = next
-	}
-
 	if raw, ok := payload["thinking"]; ok {
 		value, ok := decodeString(raw)
 		mode, valid := policy.ParseThinkingMode(value)
@@ -404,35 +303,6 @@ func (c *Config) Apply(payload map[string]json.RawMessage) error {
 			return fmt.Errorf(i18n.T("cfg.errThinking"), bytes.TrimSpace(raw))
 		}
 		thinking = mode
-	}
-
-	if raw, ok := payload["system_prompt"]; ok {
-		next, err := parseSystemPrompt(raw)
-		if err != nil {
-			return err
-		}
-		systemPrompt = next
-	}
-
-	if raw, ok := payload["profiles"]; ok {
-		next, err := parseProfiles(raw)
-		if err != nil {
-			return err
-		}
-		profiles = mergeProfiles(next)
-	}
-
-	if raw, ok := payload["profile"]; ok {
-		value, ok := decodeString(raw)
-		if !ok {
-			return errors.New(i18n.T("cfg.errProfileString"))
-		}
-		profile = strings.TrimSpace(value)
-	}
-	if profile != "" {
-		if _, ok := profiles[profile]; !ok {
-			return fmt.Errorf(i18n.T("cfg.errProfileUnknown"), profile)
-		}
 	}
 
 	if raw, ok := payload["inspector"]; ok {
@@ -486,12 +356,8 @@ func (c *Config) Apply(payload map[string]json.RawMessage) error {
 	document["port"] = c.Port
 	document["upstream"] = normalized
 	document["timeout"] = timeout.Seconds()
-	document["params"] = params
 	document["lang"] = lang.String()
 	document["thinking"] = string(thinking)
-	document["system_prompt"] = systemPrompt
-	document["profiles"] = profiles
-	document["profile"] = profile
 	document["inspector"] = inspectorSettings
 	document["storage"] = storageSettings
 	document["max_concurrent"] = maxConcurrent
@@ -501,8 +367,8 @@ func (c *Config) Apply(payload map[string]json.RawMessage) error {
 	// written by a newer version). Known keys are normalized above.
 	for key, value := range payload {
 		switch key {
-		case "host", "port", "upstream", "timeout", "params", "lang",
-			"thinking", "system_prompt", "profiles", "profile", "inspector", "storage",
+		case "host", "port", "upstream", "timeout", "lang",
+			"thinking", "inspector", "storage",
 			"max_concurrent", "max_body_size":
 			continue
 		}
@@ -515,8 +381,8 @@ func (c *Config) Apply(payload map[string]json.RawMessage) error {
 	}
 
 	c.mu.Lock()
-	c.upstream, c.upstreamURL, c.timeout, c.params, c.lang = normalized, parsed, timeout, params, lang
-	c.thinking, c.systemPrompt, c.profiles, c.profile, c.extra = thinking, systemPrompt, profiles, profile, extra
+	c.upstream, c.upstreamURL, c.timeout, c.lang = normalized, parsed, timeout, lang
+	c.thinking, c.extra = thinking, extra
 	c.inspector, c.storage = inspectorSettings, storageSettings
 	c.maxConcurrent, c.maxBodySize = maxConcurrent, maxBodySize
 	c.mu.Unlock()
@@ -550,79 +416,22 @@ func writeConfigBytes(path string, encoded []byte) error {
 	return os.Rename(tmp, path)
 }
 
-func cloneParams(params map[string]json.RawMessage) map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(params))
-	for k, v := range params {
+func cloneRaw(raw map[string]json.RawMessage) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(raw))
+	for k, v := range raw {
 		out[k] = v
 	}
 	return out
 }
 
-func cloneProfiles(profiles map[string]policy.Profile) map[string]policy.Profile {
-	out := make(map[string]policy.Profile, len(profiles))
-	for name, profile := range profiles {
-		out[name] = policy.Profile{
-			Thinking:     profile.Thinking,
-			SystemPrompt: profile.SystemPrompt,
-			Params:       cloneParams(profile.Params),
+func removedProfileKeys(raw map[string]json.RawMessage) []string {
+	var keys []string
+	for _, key := range []string{"profiles", "profile"} {
+		if _, ok := raw[key]; ok {
+			keys = append(keys, key)
 		}
 	}
-	return out
-}
-
-// DefaultProfiles are the built-in named policies. They are always available
-// and can be overridden by the config file.
-func DefaultProfiles() map[string]policy.Profile {
-	return map[string]policy.Profile{
-		"nothink": {
-			Thinking:     policy.ThinkingOff,
-			SystemPrompt: policy.SystemPrompt{Mode: policy.SystemPromptOff},
-			Params:       DefaultParams(),
-		},
-		"raw": {
-			Thinking:     policy.ThinkingPassthrough,
-			SystemPrompt: policy.SystemPrompt{Mode: policy.SystemPromptOff},
-			Params:       map[string]json.RawMessage{},
-		},
-		"thinking": {
-			Thinking:     policy.ThinkingOn,
-			SystemPrompt: policy.SystemPrompt{Mode: policy.SystemPromptOff},
-			Params:       map[string]json.RawMessage{},
-		},
-	}
-}
-
-func defaultProfiles() map[string]policy.Profile { return DefaultProfiles() }
-
-func mergeProfiles(stored map[string]policy.Profile) map[string]policy.Profile {
-	out := defaultProfiles()
-	for name, profile := range stored {
-		out[name] = profile
-	}
-	return out
-}
-
-func parseSystemPrompt(raw json.RawMessage) (policy.SystemPrompt, error) {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return policy.SystemPrompt{Mode: policy.SystemPromptOff}, nil
-	}
-	var payload struct {
-		Mode string `json:"mode"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return policy.SystemPrompt{}, errors.New(i18n.T("cfg.errSystemPromptObject"))
-	}
-	mode := policy.SystemPromptOff
-	if payload.Mode != "" {
-		parsed, ok := policy.ParseSystemPromptMode(payload.Mode)
-		if !ok {
-			return policy.SystemPrompt{}, fmt.Errorf(i18n.T("cfg.errSystemPromptMode"), payload.Mode)
-		}
-		mode = parsed
-	}
-	return policy.SystemPrompt{Mode: mode, Text: payload.Text}, nil
+	return keys
 }
 
 func parseInspector(raw json.RawMessage, current InspectorSettings) (InspectorSettings, error) {
@@ -684,58 +493,14 @@ func parseStorage(raw json.RawMessage, current StorageSettings) (StorageSettings
 	return next, nil
 }
 
-func parseProfiles(raw json.RawMessage) (map[string]policy.Profile, error) {
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &payload); err != nil || payload == nil {
-		return nil, errors.New(i18n.T("cfg.errProfilesObject"))
-	}
-	out := make(map[string]policy.Profile, len(payload))
-	for name, entry := range payload {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return nil, errors.New(i18n.T("cfg.errProfileName"))
-		}
-		var item struct {
-			Thinking     string                     `json:"thinking"`
-			SystemPrompt json.RawMessage            `json:"system_prompt"`
-			Params       map[string]json.RawMessage `json:"params"`
-		}
-		if err := json.Unmarshal(entry, &item); err != nil {
-			return nil, fmt.Errorf(i18n.T("cfg.errProfileObject"), name)
-		}
-		thinking := policy.ThinkingOff
-		if item.Thinking != "" {
-			parsed, ok := policy.ParseThinkingMode(item.Thinking)
-			if !ok {
-				return nil, fmt.Errorf(i18n.T("cfg.errProfileThinking"), name, item.Thinking)
-			}
-			thinking = parsed
-		}
-		systemPrompt := policy.SystemPrompt{Mode: policy.SystemPromptOff}
-		if len(bytes.TrimSpace(item.SystemPrompt)) > 0 {
-			parsed, err := parseSystemPrompt(item.SystemPrompt)
-			if err != nil {
-				return nil, fmt.Errorf(i18n.T("cfg.errProfileSystemPrompt"), name, err)
-			}
-			systemPrompt = parsed
-		}
-		params := item.Params
-		if params == nil {
-			params = map[string]json.RawMessage{}
-		}
-		out[name] = policy.Profile{Thinking: thinking, SystemPrompt: systemPrompt, Params: params}
-	}
-	return out, nil
-}
-
 // extraFrom keeps top-level keys this build does not recognize so a save from
 // an older UI (or a downgrade) does not silently drop them.
 func extraFrom(raw map[string]json.RawMessage) map[string]json.RawMessage {
 	out := make(map[string]json.RawMessage)
 	for key, value := range raw {
 		switch key {
-		case "host", "port", "upstream", "timeout", "params", "lang",
-			"thinking", "system_prompt", "profiles", "profile", "inspector", "storage",
+		case "host", "port", "upstream", "timeout", "lang",
+			"thinking", "inspector", "storage",
 			"max_concurrent", "max_body_size":
 			continue
 		}
@@ -774,7 +539,6 @@ func parseArgs(args []string, getenv func(string) (string, bool)) (*Config, erro
 		configPath  string
 		logPath     string
 		dbPath      string
-		sets        []string
 		foreground  bool
 		noBrowser   bool
 		showVersion bool
@@ -790,10 +554,6 @@ func parseArgs(args []string, getenv func(string) (string, bool)) (*Config, erro
 			return fmt.Errorf(i18n.T("cfg.errPortFlag"), s)
 		}
 		port, portSet = v, true
-		return nil
-	})
-	fs.Func("set", "override an injected param, repeatable (KEY=VALUE)", func(s string) error {
-		sets = append(sets, s)
 		return nil
 	})
 	fs.StringVar(&configPath, "config", "", "config file path")
@@ -837,6 +597,10 @@ func parseArgs(args []string, getenv func(string) (string, bool)) (*Config, erro
 
 	lang := resolveLang(stored.lang, getenv)
 	i18n.Set(lang)
+	if len(stored.removedProfiles) > 0 {
+		return nil, fmt.Errorf(i18n.T("cfg.errProfileRemovedFile"),
+			configPath, strings.Join(stored.removedProfiles, ", "))
+	}
 
 	cfg := &Config{
 		Host:          firstNonEmpty(host, stored.host, DefaultHost),
@@ -846,11 +610,8 @@ func parseArgs(args []string, getenv func(string) (string, bool)) (*Config, erro
 		OpenBrowser:   !noBrowser,
 		upstream:      firstNonEmpty(stored.upstream, DefaultUpstream),
 		timeout:       DefaultTimeout,
-		params:        DefaultParams(),
 		lang:          lang,
 		thinking:      policy.ThinkingOff,
-		systemPrompt:  policy.SystemPrompt{Mode: policy.SystemPromptOff},
-		profiles:      defaultProfiles(),
 		MigratedFrom:  migratedFrom,
 		extra:         extraFrom(stored.raw),
 		inspector:     DefaultInspectorSettings(),
@@ -877,43 +638,8 @@ func parseArgs(args []string, getenv func(string) (string, bool)) (*Config, erro
 		cfg.maxBodySize = stored.maxBodySize
 	}
 
-	if stored.paramsSet {
-		cfg.params = stored.params
-	}
-	for _, item := range sets {
-		key, value, err := parseSet(item)
-		if err != nil {
-			return nil, err
-		}
-		cfg.params[key] = value
-	}
-
 	if stored.thinkingSet {
 		cfg.thinking = stored.thinking
-	}
-	if stored.systemPromptSet {
-		cfg.systemPrompt = stored.systemPrompt
-	}
-	if stored.profilesSet {
-		cfg.profiles = mergeProfiles(stored.profiles)
-	}
-	profile := strings.TrimSpace(stored.profile)
-	if profile != "" {
-		selected, ok := cfg.profiles[profile]
-		if !ok {
-			return nil, fmt.Errorf(i18n.T("cfg.errProfileUnknown"), profile)
-		}
-		// An explicit --set still wins over the selected profile, otherwise
-		// the flag would be silently ignored whenever a profile is active.
-		for _, item := range sets {
-			key, value, err := parseSet(item)
-			if err != nil {
-				return nil, err
-			}
-			selected.Params[key] = value
-		}
-		cfg.profiles[profile] = selected
-		cfg.profile = profile
 	}
 
 	if stored.inspectorSet {
@@ -980,9 +706,6 @@ func (c *Config) validate() error {
 	if c.maxBodySize < 1 {
 		return errors.New(i18n.T("cfg.errMaxBodySize"))
 	}
-	if c.params == nil {
-		c.params = map[string]json.RawMessage{}
-	}
 	if c.storage.Path == "" {
 		c.storage.Path = DefaultDataPath()
 	}
@@ -1048,32 +771,6 @@ func upstreamPort(upstream *url.URL) int {
 	return 80
 }
 
-// Coerce turns a --set string into a JSON value: valid JSON stays JSON,
-// everything else becomes a string.
-func Coerce(value string) json.RawMessage {
-	trimmed := strings.TrimSpace(value)
-	if json.Valid([]byte(trimmed)) {
-		var buf bytes.Buffer
-		if err := json.Compact(&buf, []byte(trimmed)); err == nil {
-			return json.RawMessage(buf.Bytes())
-		}
-		return json.RawMessage(trimmed)
-	}
-	encoded, err := json.Marshal(trimmed)
-	if err != nil {
-		return json.RawMessage(`""`)
-	}
-	return json.RawMessage(encoded)
-}
-
-func parseSet(item string) (string, json.RawMessage, error) {
-	key, value, ok := strings.Cut(item, "=")
-	if !ok {
-		return "", nil, fmt.Errorf(i18n.T("cfg.errSetForm"), item)
-	}
-	return strings.TrimSpace(key), Coerce(strings.TrimSpace(value)), nil
-}
-
 type fileConfig struct {
 	host             string
 	port             int
@@ -1081,16 +778,10 @@ type fileConfig struct {
 	upstream         string
 	timeout          float64
 	timeoutSet       bool
-	params           map[string]json.RawMessage
-	paramsSet        bool
 	lang             string
 	thinking         policy.ThinkingMode
 	thinkingSet      bool
-	systemPrompt     policy.SystemPrompt
-	systemPromptSet  bool
-	profiles         map[string]policy.Profile
-	profilesSet      bool
-	profile          string
+	removedProfiles  []string
 	inspector        InspectorSettings
 	inspectorSet     bool
 	storage          StorageSettings
@@ -1115,6 +806,7 @@ func loadFile(path string) fileConfig {
 		return fc
 	}
 	fc.raw = raw
+	fc.removedProfiles = removedProfileKeys(raw)
 	if v, ok := raw["host"]; ok {
 		if s, ok := decodeString(v); ok {
 			fc.host = s
@@ -1133,12 +825,6 @@ func loadFile(path string) fileConfig {
 	if v, ok := raw["timeout"]; ok {
 		if f, ok := decodeFloat(v); ok {
 			fc.timeout, fc.timeoutSet = f, true
-		}
-	}
-	if v, ok := raw["params"]; ok {
-		var params map[string]json.RawMessage
-		if err := json.Unmarshal(v, &params); err == nil && params != nil {
-			fc.params, fc.paramsSet = params, true
 		}
 	}
 	if v, ok := raw["max_concurrent"]; ok {
@@ -1161,21 +847,6 @@ func loadFile(path string) fileConfig {
 			if mode, valid := policy.ParseThinkingMode(s); valid {
 				fc.thinking, fc.thinkingSet = mode, true
 			}
-		}
-	}
-	if v, ok := raw["system_prompt"]; ok {
-		if sp, err := parseSystemPrompt(v); err == nil {
-			fc.systemPrompt, fc.systemPromptSet = sp, true
-		}
-	}
-	if v, ok := raw["profiles"]; ok {
-		if profiles, err := parseProfiles(v); err == nil {
-			fc.profiles, fc.profilesSet = profiles, true
-		}
-	}
-	if v, ok := raw["profile"]; ok {
-		if s, ok := decodeString(v); ok {
-			fc.profile = s
 		}
 	}
 	if v, ok := raw["inspector"]; ok {

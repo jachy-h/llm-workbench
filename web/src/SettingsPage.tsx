@@ -142,26 +142,43 @@ export default function SettingsPage({
 
   return (
     <main className="settings-shell">
-      <section className="panel proxy-settings settings-panel">
-        <div className="settings-intro">
-          <h2>{t("settings.introTitle")}</h2>
-          <p>{t("settings.introBody")}</p>
-        </div>
+      <div className="settings-page">
+        <header className="settings-head">
+          <div className="settings-intro">
+            <h2>{t("settings.introTitle")}</h2>
+            <p>{t("settings.introBody")}</p>
+          </div>
+          <div className="settings-actions">
+            {notice.text ? (
+              <span className={`proxy-msg ${notice.kind}`} role="status">
+                {notice.text}
+              </span>
+            ) : pendingRestart ? (
+              <span className="proxy-msg warn">{t("settings.pendingRestartShort")}</span>
+            ) : null}
+            <button className="ghost" onClick={applyDefaults} disabled={disabled}>
+              {t("settings.defaults")}
+            </button>
+            <button onClick={() => void save()} disabled={saving || disabled}>
+              {t("settings.save")}
+            </button>
+          </div>
+        </header>
 
-        <div className="proxy-settings-scroll">
-          {pendingRestart ? (
-            <div className="settings-banner" role="status">
-              <strong>{t("settings.pendingRestartTitle")}</strong>
-              <span>{t("settings.pendingRestartBody")}</span>
-            </div>
-          ) : null}
+        {pendingRestart ? (
+          <div className="settings-banner" role="status">
+            <strong>{t("settings.pendingRestartTitle")}</strong>
+            <span>{t("settings.pendingRestartBody")}</span>
+          </div>
+        ) : null}
 
-          <section className="proxy-section">
-            <div className="proxy-section-head">
+        <div className="settings-grid">
+          <section className="panel proxy-settings settings-section">
+            <div className="panel-head">
               <h2>{t("settings.panelHistory")}</h2>
               <span className="aside-note">{t("settings.restartNote")}</span>
             </div>
-            <div className="proxy-section-body">
+            <div className="panel-body">
               <div className="proxy-toggle-grid">
                 <label className="proxy-switch proxy-toggle">
                   <input
@@ -226,12 +243,12 @@ export default function SettingsPage({
             </div>
           </section>
 
-          <section className="proxy-section">
-            <div className="proxy-section-head">
+          <section className="panel proxy-settings settings-section">
+            <div className="panel-head">
               <h2>{t("settings.panelStorage")}</h2>
               <span className="aside-note">{t("settings.restartNote")}</span>
             </div>
-            <div className="proxy-section-body">
+            <div className="panel-body">
               <label>
                 <span>{t("settings.fieldDb")}</span>
                 <input
@@ -259,25 +276,7 @@ export default function SettingsPage({
             </div>
           </section>
         </div>
-
-        <div className="proxy-footer">
-          {notice.text ? (
-            <span className={`proxy-msg ${notice.kind}`} role="status">
-              {notice.text}
-            </span>
-          ) : pendingRestart ? (
-            <span className="proxy-msg warn">{t("settings.pendingRestartShort")}</span>
-          ) : null}
-          <div className="proxy-footer-actions">
-            <button className="ghost" onClick={applyDefaults} disabled={disabled}>
-              {t("settings.defaults")}
-            </button>
-            <button onClick={() => void save()} disabled={saving || disabled}>
-              {t("settings.save")}
-            </button>
-          </div>
-        </div>
-      </section>
+      </div>
     </main>
   );
 }

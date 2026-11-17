@@ -177,48 +177,39 @@ var catalog = map[string]Message{
 	"cli.warnProvider":   {ZH: "Playground Provider 不可用: %v（代理继续运行）", EN: "playground provider unavailable: %v (proxy continues)"},
 	// The lifecycle marker stays language-neutral: the portal highlights
 	// start/stop and scripts grep for them.
-	"cli.logStart": {ZH: "start listen=%s upstream=%s params=%s", EN: "start listen=%s upstream=%s params=%s"},
+	"cli.logStart": {ZH: "start listen=%s upstream=%s thinking=%s", EN: "start listen=%s upstream=%s thinking=%s"},
 
 	// ---- configuration (internal/config) --------------------------------
-	"cfg.errUpstreamEmpty":       {ZH: "upstream 必须是非空字符串", EN: "upstream must be a non-empty string"},
-	"cfg.errTimeoutNumber":       {ZH: "timeout 必须是数字, 收到: %s", EN: "timeout must be a number, got: %s"},
-	"cfg.errTimeoutPositive":     {ZH: "timeout 必须大于 0", EN: "timeout must be greater than 0"},
-	"cfg.errParamsObject":        {ZH: "params 必须是 JSON 对象", EN: "params must be a JSON object"},
-	"cfg.errWriteConfig":         {ZH: "写入配置文件失败: %s", EN: "could not write the config file: %s"},
-	"cfg.errPortFlag":            {ZH: "无效的端口: %q", EN: "invalid port: %q"},
-	"cfg.errExtraArgs":           {ZH: "多余的参数: %s", EN: "unexpected arguments: %s"},
-	"cfg.errSetForm":             {ZH: "--set 需要 key=value 形式，收到: %q", EN: "--set wants key=value, got: %q"},
-	"cfg.errPortRange":           {ZH: "端口超出范围: %d", EN: "port out of range: %d"},
-	"cfg.errMaxConcurrent":       {ZH: "并发上限必须大于 0", EN: "the concurrency limit must be greater than 0"},
-	"cfg.errMaxConcurrentValue":  {ZH: "max_concurrent 必须是大于 0 的整数, 收到: %s", EN: "max_concurrent must be an integer greater than 0, got: %s"},
-	"cfg.errMaxBodySize":         {ZH: "请求体上限必须大于 0", EN: "the body-size limit must be greater than 0"},
-	"cfg.errMaxBodySizeValue":    {ZH: "max_body_size 必须是大于 0 的数字, 收到: %s", EN: "max_body_size must be a number greater than 0, got: %s"},
-	"cfg.errUpstreamScheme":      {ZH: "upstream 只支持 http/https: %q", EN: "upstream only supports http/https: %q"},
-	"cfg.errUpstreamURL":         {ZH: "upstream 不是合法 URL: %q", EN: "upstream is not a valid URL: %q"},
-	"cfg.errLangString":          {ZH: "lang 必须是 zh 或 en", EN: "lang must be zh or en"},
-	"cfg.errThinking":            {ZH: "thinking 必须是 off / on / passthrough, 收到: %s", EN: "thinking must be off / on / passthrough, got: %s"},
-	"cfg.errProfileString":       {ZH: "profile 必须是字符串", EN: "profile must be a string"},
-	"cfg.errProfileUnknown":      {ZH: "未知的 profile: %q", EN: "unknown profile: %q"},
-	"cfg.errProfilesObject":      {ZH: "profiles 必须是 JSON 对象", EN: "profiles must be a JSON object"},
-	"cfg.errProfileName":         {ZH: "profile 名称不能为空", EN: "profile names must not be empty"},
-	"cfg.errProfileObject":       {ZH: "profile %q 必须是 JSON 对象", EN: "profile %q must be a JSON object"},
-	"cfg.errProfileThinking":     {ZH: "profile %q 的 thinking 无效: %q", EN: "profile %q has an invalid thinking mode: %q"},
-	"cfg.errProfileSystemPrompt": {ZH: "profile %q 的 system_prompt 无效: %v", EN: "profile %q has an invalid system_prompt: %v"},
-	"cfg.errSystemPromptObject":  {ZH: "system_prompt 必须是 JSON 对象", EN: "system_prompt must be a JSON object"},
-	"cfg.errSystemPromptMode":    {ZH: "system_prompt.mode 必须是 off / inject-if-missing / override, 收到: %q", EN: "system_prompt.mode must be off / inject-if-missing / override, got: %q"},
-	"cfg.errInspectorObject":     {ZH: "inspector 必须是 JSON 对象", EN: "inspector must be a JSON object"},
-	"cfg.errInspectorBool":       {ZH: "inspector 的布尔字段无效", EN: "invalid boolean in inspector settings"},
-	"cfg.errInspectorNumber":     {ZH: "inspector 的数字字段无效", EN: "invalid number in inspector settings"},
-	"cfg.errInspectorNegative":   {ZH: "inspector 的保留设置不能为负数", EN: "inspector retention settings must not be negative"},
-	"cfg.errStorageObject":       {ZH: "storage 必须是 JSON 对象", EN: "storage must be a JSON object"},
-	"cfg.errStoragePath":         {ZH: "storage.path 必须是字符串", EN: "storage.path must be a string"},
+	"cfg.errUpstreamEmpty":      {ZH: "upstream 必须是非空字符串", EN: "upstream must be a non-empty string"},
+	"cfg.errTimeoutNumber":      {ZH: "timeout 必须是数字, 收到: %s", EN: "timeout must be a number, got: %s"},
+	"cfg.errTimeoutPositive":    {ZH: "timeout 必须大于 0", EN: "timeout must be greater than 0"},
+	"cfg.errWriteConfig":        {ZH: "写入配置文件失败: %s", EN: "could not write the config file: %s"},
+	"cfg.errPortFlag":           {ZH: "无效的端口: %q", EN: "invalid port: %q"},
+	"cfg.errExtraArgs":          {ZH: "多余的参数: %s", EN: "unexpected arguments: %s"},
+	"cfg.errPortRange":          {ZH: "端口超出范围: %d", EN: "port out of range: %d"},
+	"cfg.errMaxConcurrent":      {ZH: "并发上限必须大于 0", EN: "the concurrency limit must be greater than 0"},
+	"cfg.errMaxConcurrentValue": {ZH: "max_concurrent 必须是大于 0 的整数, 收到: %s", EN: "max_concurrent must be an integer greater than 0, got: %s"},
+	"cfg.errMaxBodySize":        {ZH: "请求体上限必须大于 0", EN: "the body-size limit must be greater than 0"},
+	"cfg.errMaxBodySizeValue":   {ZH: "max_body_size 必须是大于 0 的数字, 收到: %s", EN: "max_body_size must be a number greater than 0, got: %s"},
+	"cfg.errUpstreamScheme":     {ZH: "upstream 只支持 http/https: %q", EN: "upstream only supports http/https: %q"},
+	"cfg.errUpstreamURL":        {ZH: "upstream 不是合法 URL: %q", EN: "upstream is not a valid URL: %q"},
+	"cfg.errLangString":         {ZH: "lang 必须是 zh 或 en", EN: "lang must be zh or en"},
+	"cfg.errThinking":           {ZH: "thinking 必须是 off / on / passthrough, 收到: %s", EN: "thinking must be off / on / passthrough, got: %s"},
+	"cfg.errProfileRemoved":     {ZH: "profile 功能已移除，配置中不能再包含 %s", EN: "profiles were removed; the config may not contain %s"},
+	"cfg.errProfileRemovedFile": {ZH: "配置文件 %s 仍包含已移除的 %s；请删除后重新启动", EN: "config file %s still contains removed %s; delete them and restart"},
+	"cfg.errInspectorObject":    {ZH: "inspector 必须是 JSON 对象", EN: "inspector must be a JSON object"},
+	"cfg.errInspectorBool":      {ZH: "inspector 的布尔字段无效", EN: "invalid boolean in inspector settings"},
+	"cfg.errInspectorNumber":    {ZH: "inspector 的数字字段无效", EN: "invalid number in inspector settings"},
+	"cfg.errInspectorNegative":  {ZH: "inspector 的保留设置不能为负数", EN: "inspector retention settings must not be negative"},
+	"cfg.errStorageObject":      {ZH: "storage 必须是 JSON 对象", EN: "storage must be a JSON object"},
+	"cfg.errStoragePath":        {ZH: "storage.path 必须是字符串", EN: "storage.path must be a string"},
 
 	// ---- --help ---------------------------------------------------------
 	"help.usage": {
 		ZH: `用法: llm-workbench [命令] [选项]
 
 本地优先的 LLM 代理与实验工作台（支持 Ollama 与更多 Provider）。
-代理默认关闭思考并补齐缺失的生成参数；其余路径原样透传。
+代理默认只改写思考字段；生成参数、消息和其他内容原样透传。
 除启动项外，全部配置都在代理页面上完成。
 
 命令:
@@ -229,26 +220,24 @@ var catalog = map[string]Message{
 选项:
   --host string            监听地址 (默认 %[1]s)
   --port int               监听端口 (默认 %[2]s)
-  --set KEY=VALUE          覆盖注入参数，可重复；值按 JSON 解析
   --config string          配置文件 (默认 %[3]s)
   --log string             日志文件 (默认 %[4]s)
   --db string              SQLite 数据库路径 (默认 %[5]s)
   -v, --version            显示版本号
 
-上游地址、超时、thinking、system prompt、profile、历史记录和语言都在
+上游地址、超时、thinking、历史记录和语言都在
 代理页面 (/_/llm-proxy) 上配置。
 示例:
   llm-workbench
   llm-workbench stop
   llm-workbench restart                 # 重启（沿用当前配置）
   llm-workbench restart --port 11501    # 停掉旧实例，换端口重开
-  llm-workbench --set temperature=0 --set max_tokens=128
 `,
 		EN: `Usage: llm-workbench [command] [options]
 
 A local-first LLM proxy and experiment workbench with Ollama and more providers.
-The proxy turns thinking off and fills in missing generation params by
-default; every other path is passed through untouched.
+The proxy only rewrites thinking-related fields; generation params, messages
+and every other field are passed through untouched.
 Everything except bootstrapping is configured on the proxy page.
 
 Commands:
@@ -259,20 +248,18 @@ Commands:
 Options:
   --host string            listen address (default %[1]s)
   --port int               listen port (default %[2]s)
-  --set KEY=VALUE          override an injected param, repeatable; parsed as JSON
   --config string          config file (default %[3]s)
   --log string             log file (default %[4]s)
   --db string              SQLite database path (default %[5]s)
   -v, --version            print the version
 
-Upstream, timeout, thinking, system prompt, profiles, history and language
-are configured on the proxy page (/_/llm-proxy).
+Upstream, timeout, thinking, history and language are configured on the
+proxy page (/_/llm-proxy).
 Examples:
   llm-workbench
   llm-workbench stop
   llm-workbench restart                 # restart with the current config
   llm-workbench restart --port 11501    # stop the old one, reopen on a new port
-  llm-workbench --set temperature=0 --set max_tokens=128
 `,
 	},
 
@@ -283,8 +270,8 @@ Examples:
 	"proxy.errBusy":           {ZH: "proxy: 并发已满，请稍后重试", EN: "proxy: all slots busy, please retry shortly"},
 	"proxy.errReadBody":       {ZH: "proxy: 读取请求体失败: %s", EN: "proxy: could not read the request body: %s"},
 	"proxy.errBodyTooLarge":   {ZH: "proxy: 请求体超过上限 (%d 字节)", EN: "proxy: request body over the limit (%d bytes)"},
-	"proxy.errProfile":        {ZH: "proxy: 未知的 profile: %q", EN: "proxy: unknown profile: %q"},
-	"proxy.errThinking":       {ZH: "proxy: thinking 必须是 off / on / passthrough, 收到: %q", EN: "proxy: thinking must be off / on / passthrough, got: %q"},
+	"proxy.errProfileHeader":  {ZH: "proxy: X-Workbench-Profile 已移除，请改用代理页面的全局设置", EN: "proxy: X-Workbench-Profile was removed; use the global settings on the proxy page"},
+	"proxy.errThinkingHeader": {ZH: "proxy: X-Workbench-Thinking 已移除，请改用代理页面的 Thinking 模式", EN: "proxy: X-Workbench-Thinking was removed; use the Thinking mode on the proxy page"},
 
 	// ---- portal (internal/portal) ---------------------------------------
 	"portal.errLoopback":      {ZH: "代理页面只允许本机访问", EN: "the proxy page only accepts local requests"},

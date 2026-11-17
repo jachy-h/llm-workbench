@@ -9,11 +9,11 @@ LLM Workbench is a local-first LLM proxy and experiment workbench. Ollama is sup
 The proxy's default behavior:
 
 - `/v1/chat/completions` forces `reasoning_effort: "none"` and removes `think`;
-- `/api/chat` forces `think: false`;
-- missing generation params are filled in; values the client sends explicitly always win;
+- `/api/chat` forces `think: false` and removes `reasoning_effort`;
+- generation params, `messages`, tools and every other client field pass through untouched — there are no injected defaults;
 - other paths, status codes and streaming responses pass through as untouched as possible.
 
-v0.3.0 adds configurable thinking / system prompts / profiles, an Ollama provider and a semantic call engine — the foundation for Playground, Inspector and Experiments.
+v0.3.0 added configurable thinking, an Ollama provider and a semantic call engine — the foundation for Playground, Inspector and Experiments.
 
 > Current stage: Phase 3. Proxy, provider, Inspector, Playground and Experiments are in place; Phase 4 is extension and stabilization.
 > Loopback only: no TLS, no auth — do not expose it to a LAN or the public internet.
@@ -65,7 +65,7 @@ Defaults: listen on `127.0.0.1:11500`, upstream `http://127.0.0.1:11434`. The li
 
 ## Proxy
 
-The proxy page is at <http://127.0.0.1:11500/_/llm-proxy> (loopback only): upstream, timeout, injected params, concurrency and body limits, thinking, system prompts, profiles, language, macOS autostart and the last 100 request log lines. The top bar links to Requests, Playground, Experiments and Settings; the language toggle is shared by all pages and remembered in the browser.
+The proxy page is at <http://127.0.0.1:11500/_/llm-proxy> (loopback only): upstream, timeout, concurrency and body limits, thinking, language, macOS autostart and the last 100 request log lines. The top bar links to Requests, Playground, Experiments and Settings; the language toggle is shared by all pages and remembered in the browser.
 
 Everything except the bootstrap paths (`--host`, `--port`, `--config`, `--log`, `--db`) is configured in the UI: proxy behavior on the proxy page, request history, privacy and storage on the Settings page.
 
@@ -129,63 +129,29 @@ Experiment calls are recorded in Inspector (`source=experiment`) and record bodi
 
 ## Configuration
 
-Precedence:
-
-```text
-client body field
-  > request profile (full snapshot, X-Workbench-Profile)
-  > startup profile / global settings
-      (CLI --set > config file > built-in defaults)
-```
-
-`--set` overlays the startup profile and the config file; a request-header profile is an independent snapshot and does not inherit global `--set`. An explicit client field always wins.
-
-Built-in params: `temperature=0.2`, `top_p=0.9`, `max_tokens=96`, `keep_alive="30m"`.
+The proxy is transparent: the client body is forwarded as-is, and only the
+thinking switch is applied on the two chat paths.
 
 ### Thinking
 
 | Mode | `/v1/chat/completions` | `/api/chat` |
 | --- | --- | --- |
 | `off` (default) | force `reasoning_effort:"none"`, remove `think` | force `think:false`, remove `reasoning_effort` |
-| `on` | stop forcing `none`; keep the client's level | force `think:true` |
+| `on` | remove `think`; keep the client's `reasoning_effort` | force `think:true`, remove `reasoning_effort` |
 | `passthrough` | leave both fields alone | leave both fields alone |
 
 Set the mode on the proxy page (**Thinking mode**); it applies immediately.
 
-### System Prompt
+### Pass-through
 
-| Mode | Behavior |
-| --- | --- |
-| `off` (default) | leave messages alone |
-| `inject-if-missing` | prepend a system message only when none exists |
-| `override` | remove existing system/developer messages and replace them |
+Generation params such as `temperature`, `max_tokens` and `keep_alive` are
+never injected. A system prompt is never added or replaced. Legacy `params`
+and `system_prompt` keys in an old config file are ignored and preserved as
+unknown keys; delete them if you want a clean file.
 
-Configure the mode and text on the proxy page; both apply immediately.
+### Removed: profiles
 
-### Profiles
-
-A profile is a reusable bundle of thinking / system prompt / params. Built-ins:
-
-- `nothink`: the historical default;
-- `raw`: no params, thinking passthrough;
-- `thinking`: thinking on, no params.
-
-Edit the profiles JSON and pick a default profile on the proxy page.
-
-Select a profile per request on chat paths (the header is stripped before forwarding):
-
-```bash
-curl http://127.0.0.1:11500/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -H 'X-Workbench-Profile: raw' \
-  -d '{"model":"qwen3:8b","messages":[{"role":"user","content":"hi"}]}'
-```
-
-Temporarily override thinking:
-
-```text
-X-Workbench-Thinking: off | on | passthrough
-```
+`profiles` / `profile` config and the `X-Workbench-Profile` / `X-Workbench-Thinking` headers were removed. A config file that still contains `profiles` or `profile` fails to start with a message telling you to delete the keys; on the two chat paths, a request with either header gets a 400 JSON error and never reaches the upstream. Thinking is controlled only by the global mode.
 
 Config example:
 
@@ -195,22 +161,7 @@ Config example:
   "port": 11500,
   "upstream": "http://127.0.0.1:11434",
   "timeout": 600,
-  "params": {
-    "temperature": 0.2,
-    "top_p": 0.9,
-    "max_tokens": 96,
-    "keep_alive": "30m"
-  },
   "thinking": "off",
-  "system_prompt": {"mode": "off", "text": ""},
-  "profile": "",
-  "profiles": {
-    "fast": {
-      "thinking": "off",
-      "system_prompt": {"mode": "inject-if-missing", "text": "Be terse."},
-      "params": {"temperature": 0.1, "top_k": 20}
-    }
-  },
   "inspector": {
     "enabled": true,
     "capture_bodies": false,
@@ -236,7 +187,7 @@ The file is JSONC: `//` and `/* */` comments and trailing commas are accepted, a
 
 The listen port needs to be free for the proxy, so it is never 11434: a stored `"port": 11434` (or a port equal to the upstream's) is replaced with 11500 and written back once. An explicit `--port 11434` is corrected the same way and reported at startup.
 
-Upstream, timeout, params, thinking, system prompt, profiles, language and request-history capture apply live. `host`, `port`, the database path, concurrency and body-size limits take effect after `./llm-workbench restart`.
+Upstream, timeout, thinking, language and request-history capture apply live. `host`, `port`, the database path, concurrency and body-size limits take effect after `./llm-workbench restart`.
 
 ## CLI
 
@@ -254,7 +205,6 @@ llm-workbench [<command>] [<options>]
 | --- | --- | --- |
 | `--host` | `host` | `127.0.0.1` |
 | `--port` | `port` | `11500` |
-| `--set KEY=VALUE` (repeatable) | `params` | see above |
 | `--config` | — | `~/.llm-workbench/config.jsonc` |
 | `--log` | — | `~/.llm-workbench/logs/llm-workbench.log` |
 | `--db` | `storage.path` | `~/.llm-workbench/workbench.db` |

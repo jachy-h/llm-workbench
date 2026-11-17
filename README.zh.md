@@ -9,11 +9,11 @@ LLM Workbench 是一个本地优先的 LLM 调用代理与实验工作台。当�
 当前的代理默认行为：
 
 - 对 `/v1/chat/completions` 强制 `reasoning_effort: "none"`，删除 `think`；
-- 对 `/api/chat` 强制 `think: false`；
-- 只补齐客户端缺失的生成参数，客户端显式传的字段永远优先；
+- 对 `/api/chat` 强制 `think: false`，删除 `reasoning_effort`；
+- 生成参数、`messages`、tools 和其他客户端字段全部原样透传，不注入任何默认值；
 - 其他路径、状态码、流式响应尽量原样透传。
 
-在这个基础上，v0.3.0 增加了可配置的 thinking / System Prompt / profile、Ollama Provider 和语义调用 Engine，为后续 Playground、Inspector、Experiments 打基础。
+v0.3.0 增加了可配置的 thinking、Ollama Provider 和语义调用 Engine，为后续 Playground、Inspector、Experiments 打基础。
 
 > 当前阶段：Phase 3。Proxy、Provider、Inspector、Playground、Experiments 已完成；Phase 4 是扩展与稳定化。
 > 只监听本机，不做 TLS 与认证，不要暴露到局域网或公网。
@@ -71,8 +71,8 @@ http://127.0.0.1:11500/api/chat
 
 代理页面在 <http://127.0.0.1:11500/_/llm-proxy>（仅本机访问）：
 
-- 上游地址、超时、注入参数、并发与请求体上限；
-- thinking、System Prompt、Profile；
+- 上游地址、超时、并发与请求体上限；
+- thinking 模式；
 - 语言、macOS 登录自启；
 - 最近 100 条请求日志。
 
@@ -144,63 +144,25 @@ Playground 的每次调用都会写入 Inspector（`source=playground`），并�
 
 ## 配置
 
-优先级：
-
-```text
-客户端 body 显式字段
-  > 请求级 profile（完整快照，X-Workbench-Profile）
-  > 启动时选中的 profile / 全局设置
-      （CLI --set > 配置文件 > 内置默认）
-```
-
-`--set` 会覆盖启动时选中的 profile 和配置文件；请求头选择的 profile 是一份独立快照，不叠加全局 `--set`。客户端显式字段永远最高。
-
-默认注入参数：`temperature=0.2`、`top_p=0.9`、`max_tokens=96`、`keep_alive="30m"`。
+代理是透明的：客户端 body 原样转发，只在两个 chat 路径上应用 thinking 开关。
 
 ### Thinking
 
 | 模式 | `/v1/chat/completions` | `/api/chat` |
 | --- | --- | --- |
 | `off`（默认） | 强制 `reasoning_effort:"none"`，删除 `think` | 强制 `think:false`，删除 `reasoning_effort` |
-| `on` | 不再强制 `none`，保留客户端 level | 强制 `think:true` |
+| `on` | 删除 `think`，保留客户端的 `reasoning_effort` | 强制 `think:true`，删除 `reasoning_effort` |
 | `passthrough` | 完全不碰这两个字段 | 完全不碰这两个字段 |
 
 在代理页面选择模式（Thinking 模式），即时生效。
 
-### System Prompt
+### 透传
 
-| 模式 | 行为 |
-| --- | --- |
-| `off`（默认） | 不碰 messages |
-| `inject-if-missing` | 没有 system/developer 消息时插入一条 |
-| `override` | 删除已有 system/developer，替换为配置内容 |
+`temperature`、`max_tokens`、`keep_alive` 等生成参数不会被注入；System Prompt 不会被插入或替换。旧配置文件里的 `params` 和 `system_prompt` 键会被忽略并作为未知键保留；想清理文件可以手动删除。
 
-在代理页面设置模式和文本，即时生效。
+### 已移除：Profile
 
-### Profile
-
-Profile 是一组可复用的 thinking / System Prompt / 参数。内置：
-
-- `nothink`：与历史默认行为一致；
-- `raw`：不注入参数、thinking 透传；
-- `thinking`：thinking 打开、不注入参数。
-
-在代理页面编辑 profiles JSON 并选择默认 profile。
-
-请求级选择（只对 chat 路径生效，头不会转发给上游）：
-
-```bash
-curl http://127.0.0.1:11500/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -H 'X-Workbench-Profile: raw' \
-  -d '{"model":"qwen3:8b","messages":[{"role":"user","content":"hi"}]}'
-```
-
-也可以临时覆盖 thinking：
-
-```text
-X-Workbench-Thinking: off | on | passthrough
-```
+`profiles` / `profile` 配置和 `X-Workbench-Profile` / `X-Workbench-Thinking` 请求头已移除。配置文件里仍有 `profiles` 或 `profile` 会启动失败，并提示删除这些键；在两个 chat 路径上携带这两个头会返回 400 JSON 错误，不会打到上游。thinking 只由全局模式控制。
 
 配置文件示例（由代理页面或手工维护）：
 
@@ -210,22 +172,7 @@ X-Workbench-Thinking: off | on | passthrough
   "port": 11500,
   "upstream": "http://127.0.0.1:11434",
   "timeout": 600,
-  "params": {
-    "temperature": 0.2,
-    "top_p": 0.9,
-    "max_tokens": 96,
-    "keep_alive": "30m"
-  },
   "thinking": "off",
-  "system_prompt": {"mode": "off", "text": ""},
-  "profile": "",
-  "profiles": {
-    "fast": {
-      "thinking": "off",
-      "system_prompt": {"mode": "inject-if-missing", "text": "Be terse."},
-      "params": {"temperature": 0.1, "top_k": 20}
-    }
-  },
   "inspector": {
     "enabled": true,
     "capture_bodies": false,
@@ -251,7 +198,7 @@ X-Workbench-Thinking: off | on | passthrough
 
 监听端口必须是代理自己能占住的，所以永远不会是 11434：配置里的 `"port": 11434`（或与 upstream 相同的端口）会被改成 11500 并写回一次；显式 `--port 11434` 同样会被纠正，并在启动时提示。
 
-上游、超时、参数、thinking、System Prompt、profile、语言和请求历史捕获即时生效；`host`、`port`、数据库路径、并发和请求体上限在 `./llm-workbench restart` 后生效。
+上游、超时、thinking、语言和请求历史捕获即时生效；`host`、`port`、数据库路径、并发和请求体上限在 `./llm-workbench restart` 后生效。
 
 ## CLI
 
@@ -269,7 +216,6 @@ llm-workbench [<command>] [<options>]
 | --- | --- | --- |
 | `--host` | `host` | `127.0.0.1` |
 | `--port` | `port` | `11500` |
-| `--set KEY=VALUE`（可重复） | `params` | 见上 |
 | `--config` | — | `~/.llm-workbench/config.jsonc` |
 | `--log` | — | `~/.llm-workbench/logs/llm-workbench.log` |
 | `--db` | `storage.path` | `~/.llm-workbench/workbench.db` |

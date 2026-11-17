@@ -320,7 +320,7 @@ func TestHelp(t *testing.T) {
 		t.Fatalf("--help: %v", err)
 	}
 	for _, needle := range []string{
-		"--set", "--host", "--port", "--config", "--log", "--db", "--version",
+		"--host", "--port", "--config", "--log", "--db", "--version",
 		"stop", "restart", "start", "/_/llm-proxy",
 	} {
 		if !strings.Contains(string(out), needle) {
@@ -328,7 +328,7 @@ func TestHelp(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{
-		"--upstream", "--timeout", "--thinking", "--system-prompt", "--profile",
+		"--set", "--upstream", "--timeout", "--thinking", "--system-prompt", "--profile",
 		"--no-inspector", "--capture-bodies", "--retention-days", "--max-rows",
 		"--max-body-size", "--max-concurrent", "PROXY_PARAMS", "LLM_WORKBENCH_LANG",
 	} {
@@ -380,8 +380,7 @@ func TestBannerAndPassthrough(t *testing.T) {
 		"llm-workbench v0.6.0",
 		"listen    " + p.base,
 		"upstream  " + up.server.URL,
-		"inject    keep_alive=\"30m\", max_tokens=96, temperature=0.2, top_p=0.9",
-		"强制关闭思考",
+		"inject    + 强制关闭思考",
 		"前台运行 (pid ",
 	} {
 		if !strings.Contains(banner, needle) {
@@ -395,7 +394,7 @@ func TestBannerAndPassthrough(t *testing.T) {
 	}
 }
 
-func TestConfigFileUpstreamAndParams(t *testing.T) {
+func TestConfigFileIgnoresParams(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
 	port := freePort(t)
@@ -419,43 +418,21 @@ func TestConfigFileUpstreamAndParams(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	got := decodeBody(t, echo.Body)
-	if got["max_tokens"] != float64(42) {
-		t.Errorf("max_tokens = %v, want 42 from the config file", got["max_tokens"])
+	if _, present := got["max_tokens"]; present {
+		t.Errorf("legacy params were injected: %v", got)
 	}
 	if _, present := got["temperature"]; present {
-		t.Errorf("config params replace the defaults, got %v", got)
+		t.Errorf("legacy params were injected: %v", got)
 	}
 	if got["reasoning_effort"] != "none" {
 		t.Errorf("reasoning_effort = %v", got["reasoning_effort"])
 	}
 }
 
-func TestCLISet(t *testing.T) {
-	up := newEchoUpstream(t)
-	dir := t.TempDir()
-	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(`{"upstream": %q}`, up.server.URL))
-	p := startProxy(t, []string{
-		"--config", configPath,
-		"--log", filepath.Join(dir, "proxy.log"),
-		"--db", filepath.Join(dir, "workbench.db"),
-		"--set", "temperature=0",
-		"--set", "max_tokens=7",
-	}, nil)
-
-	_, echo := postJSON(t, p.base, "/api/chat", `{"model":"m"}`)
-	got := decodeBody(t, echo.Body)
-	options, ok := got["options"].(map[string]any)
-	if !ok {
-		t.Fatalf("options = %v", got["options"])
-	}
-	if options["temperature"] != float64(0) || options["num_predict"] != float64(7) {
-		t.Errorf("options = %v, want temperature 0 and num_predict 7", options)
-	}
-	if got["think"] != false {
-		t.Errorf("think = %v", got["think"])
-	}
-	if got["keep_alive"] != "30m" {
-		t.Errorf("keep_alive = %v, want the default 30m", got["keep_alive"])
+func TestRemovedSetFlagIsRejected(t *testing.T) {
+	out, err := exec.Command(binaryPath, "--set", "temperature=0").CombinedOutput()
+	if err == nil {
+		t.Fatalf("--set was accepted: %s", out)
 	}
 }
 
@@ -566,8 +543,8 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 		t.Errorf("launch_ready = %v", state["launch_ready"])
 	}
 
-	// Saving params through the portal changes injection immediately.
-	status, data := postRaw(t, p.base+"/_/llm-proxy/api/config", `{"params":{"temperature":0.25}}`)
+	// Saving thinking through the portal changes the rewrite immediately.
+	status, data := postRaw(t, p.base+"/_/llm-proxy/api/config", `{"thinking":"on"}`)
 	if status != http.StatusOK {
 		t.Fatalf("config save status = %d: %s", status, data)
 	}
@@ -575,17 +552,17 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if saved["params"].(map[string]any)["temperature"] != 0.25 {
-		t.Errorf("saved params = %v", saved["params"])
+	if saved["thinking"] != "on" {
+		t.Errorf("saved thinking = %v", saved["thinking"])
 	}
 
-	_, echo := postJSON(t, p.base, "/v1/chat/completions", `{"model":"m"}`)
+	_, echo := postJSON(t, p.base, "/v1/chat/completions", `{"model":"m","reasoning_effort":"high","think":true}`)
 	got := decodeBody(t, echo.Body)
-	if got["temperature"] != 0.25 {
-		t.Errorf("injected temperature = %v, want 0.25", got["temperature"])
+	if got["reasoning_effort"] != "high" {
+		t.Errorf("reasoning_effort = %v, want client value on", got["reasoning_effort"])
 	}
-	if got["reasoning_effort"] != "none" {
-		t.Errorf("reasoning_effort = %v", got["reasoning_effort"])
+	if _, present := got["think"]; present {
+		t.Errorf("think was not removed in on mode: %v", got)
 	}
 
 	// The config file was persisted in the documented shape.
@@ -597,8 +574,8 @@ func TestPortalServesPageAndAppliesConfigLive(t *testing.T) {
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatal(err)
 	}
-	if document["params"].(map[string]any)["temperature"] != 0.25 {
-		t.Errorf("persisted params = %v", document["params"])
+	if document["thinking"] != "on" {
+		t.Errorf("persisted thinking = %v", document["thinking"])
 	}
 
 	// Structured log entries are visible to the portal.
@@ -1126,13 +1103,14 @@ func TestLanguageSwitchThroughPortal(t *testing.T) {
 	}
 }
 
-// TestThinkingAndSystemPromptEndToEnd verifies the new policy flags through
-// the compiled binary, not just the package-level functions.
-func TestThinkingAndSystemPromptEndToEnd(t *testing.T) {
+// TestThinkingEndToEnd verifies the thinking flag through the compiled binary,
+// not just the package-level functions. Params and system prompts must pass
+// through untouched.
+func TestThinkingEndToEnd(t *testing.T) {
 	up := newEchoUpstream(t)
 	dir := t.TempDir()
 	configPath := writeConfig(t, filepath.Join(dir, "config.json"), fmt.Sprintf(
-		`{"upstream": %q, "params": {}, "thinking": "passthrough", "system_prompt": {"mode": "inject-if-missing", "text": "be terse"}}`,
+		`{"upstream": %q, "params": {"max_tokens": 42}, "thinking": "passthrough", "system_prompt": {"mode": "inject-if-missing", "text": "be terse"}}`,
 		up.server.URL))
 	p := startProxy(t, []string{
 		"--config", configPath,
@@ -1147,15 +1125,15 @@ func TestThinkingAndSystemPromptEndToEnd(t *testing.T) {
 		t.Errorf("thinking passthrough changed the body: %v", got)
 	}
 	messages, ok := got["messages"].([]any)
-	if !ok || len(messages) != 2 {
-		t.Fatalf("messages = %v", got["messages"])
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages were rewritten: %v", got["messages"])
 	}
-	first := messages[0].(map[string]any)
-	if first["role"] != "system" || first["content"] != "be terse" {
-		t.Errorf("system prompt was not injected: %v", first)
+	if _, present := got["max_tokens"]; present {
+		t.Errorf("params were injected: %v", got)
 	}
 
-	// A request-level thinking override wins for this request only.
+	// The request-level thinking header was removed and is rejected instead
+	// of being applied or forwarded.
 	req, err := http.NewRequest(http.MethodPost, p.base+"/v1/chat/completions",
 		strings.NewReader(`{"model":"m","think":true,"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
@@ -1168,13 +1146,9 @@ func TestThinkingAndSystemPromptEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var envelope echoResult
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		t.Fatal(err)
-	}
-	got = decodeBody(t, envelope.Body)
-	if got["reasoning_effort"] != "none" {
-		t.Errorf("request thinking override did not win: %v", got)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("removed thinking header: status = %d, body %s", resp.StatusCode, body)
 	}
 }
 

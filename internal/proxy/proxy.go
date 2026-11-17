@@ -52,10 +52,8 @@ const (
 type Settings interface {
 	UpstreamURL() *url.URL
 	Timeout() time.Duration
-	Params() map[string]json.RawMessage
-	// Policy resolves a named profile ("" means the configured default).
-	// ok is false for an unknown profile.
-	Policy(profile string) (policy.Policy, bool)
+	// Policy returns the live global request policy.
+	Policy() policy.Policy
 }
 
 // Recorder receives one structured entry per proxied request.
@@ -72,9 +70,7 @@ type Options struct {
 	// upstream. It is not a total request deadline: a stream that keeps
 	// producing data may live much longer.
 	Timeout time.Duration
-	// Params are the default generation params to inject.
-	Params map[string]json.RawMessage
-	// Settings overrides Upstream/Timeout/Params and is re-read per request,
+	// Settings overrides Upstream/Timeout and is re-read per request,
 	// so runtime changes (portal) take effect without a restart.
 	Settings Settings
 	// MaxConcurrent bounds requests in flight (default 8).
@@ -99,18 +95,13 @@ type Options struct {
 type staticSettings struct {
 	upstream *url.URL
 	timeout  time.Duration
-	params   map[string]json.RawMessage
 }
 
-func (s staticSettings) UpstreamURL() *url.URL              { return s.upstream }
-func (s staticSettings) Timeout() time.Duration             { return s.timeout }
-func (s staticSettings) Params() map[string]json.RawMessage { return s.params }
+func (s staticSettings) UpstreamURL() *url.URL  { return s.upstream }
+func (s staticSettings) Timeout() time.Duration { return s.timeout }
 
-func (s staticSettings) Policy(profile string) (policy.Policy, bool) {
-	if profile != "" {
-		return policy.Policy{}, false
-	}
-	return policy.New(s.params), true
+func (s staticSettings) Policy() policy.Policy {
+	return policy.New(nil)
 }
 
 // Handler is the http.Handler that fronts Ollama.
@@ -140,7 +131,6 @@ func New(opts Options) (*Handler, error) {
 		opts.Settings = staticSettings{
 			upstream: upstream,
 			timeout:  opts.Timeout,
-			params:   opts.Params,
 		}
 	}
 	if opts.MaxConcurrent < 1 {

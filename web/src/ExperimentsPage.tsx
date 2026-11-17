@@ -12,7 +12,7 @@ import {
   runExperiment,
   rateRun,
 } from "./api";
-import SearchSelect from "./components/SearchSelect";
+import Select from "./components/Select";
 import { useI18n } from "./i18n";
 import { toModelOptions } from "./modelOptions";
 import type {
@@ -412,21 +412,21 @@ export default function ExperimentsPage({ seed, onSeedConsumed, onOpenRequest }:
                     <div className="model-row" key={index}>
                       <label>
                         {t("experiments.provider")}
-                        <select
+                        <Select
                           value={variant.provider}
-                          onChange={(event) => setVariants((current) => current.map((item, i) => (
-                            i === index ? { ...item, provider: event.target.value, model: "" } : item
+                          onChange={(provider) => setVariants((current) => current.map((item, i) => (
+                            i === index ? { ...item, provider, model: "" } : item
                           )))}
-                        >
-                          <option value="">—</option>
-                          {providers.map((provider) => (
-                            <option key={provider.id} value={provider.id}>{provider.name}</option>
-                          ))}
-                        </select>
+                          options={[
+                            { value: "", label: "—" },
+                            ...providers.map((provider) => ({ value: provider.id, label: provider.name })),
+                          ]}
+                        />
                       </label>
                       <label>
                         {t("experiments.model")}
-                        <SearchSelect
+                        <Select
+                          searchable
                           value={variant.model}
                           options={toModelOptions(models[variant.provider] ?? [])}
                           placeholder={t("experiments.modelPlaceholder")}
@@ -605,13 +605,18 @@ export default function ExperimentsPage({ seed, onSeedConsumed, onOpenRequest }:
                                 <span className="mono">{formatDuration(run.duration_ms)}</span>
                                 <label className="run-rating">
                                   {t("common.rating")}
-                                  <select
-                                    value={run.rating ?? 0}
-                                    onChange={(event) => void setRating(run, Number(event.target.value))}
-                                  >
-                                    <option value={0}>—</option>
-                                    {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}
-                                  </select>
+                                  <Select
+                                    className="small"
+                                    value={String(run.rating ?? 0)}
+                                    onChange={(rating) => void setRating(run, Number(rating))}
+                                    options={[
+                                      { value: "0", label: "—" },
+                                      ...[1, 2, 3, 4, 5].map((value) => ({
+                                        value: String(value),
+                                        label: String(value),
+                                      })),
+                                    ]}
+                                  />
                                 </label>
                                 {run.request_id ? (
                                   <button className="ghost small" onClick={() => onOpenRequest(run.request_id!)}>

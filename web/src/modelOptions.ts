@@ -1,7 +1,7 @@
-import type { SearchSelectOption } from "./components/SearchSelect";
+import type { SelectOption } from "./components/Select";
 import type { ModelInfo } from "./types";
 
-export function toModelOptions(models: ModelInfo[]): SearchSelectOption[] {
+export function toModelOptions(models: ModelInfo[]): SelectOption[] {
   return models.map((model) => {
     const hint = [model.parameter_size, model.quantization].filter(Boolean).join(" · ");
     return {

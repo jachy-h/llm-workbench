@@ -470,18 +470,6 @@
           <span data-i18n="field.systemText">System Prompt 文本</span>
           <textarea id="systemText" rows="3" spellcheck="false" autocomplete="off"></textarea>
         </label>
-        <div class="divider">
-          <span data-i18n="panel.profiles">Profile</span>
-          <span class="aside-note" data-i18n="panel.profilesNote">留空 = 使用上面的全局设置</span>
-        </div>
-        <label class="f" for="profile"><span data-i18n="field.profile">默认 Profile</span>
-          <input id="profile" type="text" spellcheck="false" autocomplete="off" placeholder="nothink / raw / thinking">
-        </label>
-        <label class="growable" for="profiles">
-          <span class="label-row"><span data-i18n="field.profiles">Profiles（JSON 对象）</span>
-            <span class="aside-note" id="profilesMeta"></span></span>
-          <textarea id="profiles" class="json" rows="6" spellcheck="false" autocomplete="off"></textarea>
-        </label>
       </div>
     </section>
 
@@ -596,8 +584,6 @@
       "panel.limits": "限制",
       "panel.policy": "思考与提示词",
       "panel.policyNote": "立即生效",
-      "panel.profiles": "Profile",
-      "panel.profilesNote": "留空 = 使用上面的全局设置",
       "panel.history": "请求历史",
       "panel.autostart": "启动项",
       "panel.system": "启动与文件",
@@ -618,8 +604,6 @@
       "prompt.inject": "缺失时注入",
       "prompt.override": "覆盖已有",
       "field.systemText": "System Prompt 文本",
-      "field.profile": "默认 Profile",
-      "field.profiles": "Profiles（JSON 对象）",
       "field.inspectorEnabled": "记录请求历史",
       "field.captureBodies": "保存请求/响应正文",
       "field.retentionDays": "保留天数（0 = 永久）",
@@ -646,15 +630,9 @@
       "params.notObject": "需要一个 JSON 对象",
       "params.count": "{n} 个参数",
       "params.empty": "空对象",
-      "profiles.badJSON": "JSON 格式有误",
-      "profiles.notObject": "需要一个 JSON 对象",
-      "profiles.count": "{n} 个 profile",
-      "profiles.empty": "空对象",
       "msg.saved": "已保存并生效",
       "msg.badJSON": "参数不是合法 JSON: {msg}",
       "msg.notObject": "参数必须是 JSON 对象，例如 {\"max_tokens\": 96}",
-      "msg.badProfiles": "profiles 不是合法 JSON: {msg}",
-      "msg.profilesNotObject": "profiles 必须是 JSON 对象",
       "msg.defaultsFilled": "已填回默认值，点「保存并生效」写入",
       "msg.noDefaults": "还没取到内置默认值，稍后再试",
       "msg.installing": "正在安装…",
@@ -684,8 +662,6 @@
       "panel.limits": "Limits",
       "panel.policy": "Thinking & prompt",
       "panel.policyNote": "applies immediately",
-      "panel.profiles": "Profiles",
-      "panel.profilesNote": "empty = use the global settings above",
       "panel.history": "Request history",
       "panel.autostart": "Startup",
       "panel.system": "Startup & files",
@@ -706,8 +682,6 @@
       "prompt.inject": "inject if missing",
       "prompt.override": "override",
       "field.systemText": "System prompt text",
-      "field.profile": "Default profile",
-      "field.profiles": "Profiles (JSON object)",
       "field.inspectorEnabled": "Record request history",
       "field.captureBodies": "Persist request/response bodies",
       "field.retentionDays": "Retention days (0 = forever)",
@@ -734,15 +708,9 @@
       "params.notObject": "expected a JSON object",
       "params.count": "{n} params",
       "params.empty": "empty object",
-      "profiles.badJSON": "invalid JSON",
-      "profiles.notObject": "expected a JSON object",
-      "profiles.count": "{n} profiles",
-      "profiles.empty": "empty object",
       "msg.saved": "saved and applied",
       "msg.badJSON": "params are not valid JSON: {msg}",
       "msg.notObject": "params must be a JSON object, e.g. {\"max_tokens\": 96}",
-      "msg.badProfiles": "profiles are not valid JSON: {msg}",
-      "msg.profilesNotObject": "profiles must be a JSON object",
       "msg.defaultsFilled": "defaults filled in — press “Save” to write them",
       "msg.noDefaults": "no built-in defaults yet, try again",
       "msg.installing": "installing…",
@@ -791,7 +759,6 @@
       : (log.paused ? t("live.paused") : t("live.everySecond"));
     $("logCount").textContent = t("logs.count", { n: $("logList").childElementCount });
     updateParamsMeta();
-    updateProfilesMeta();
     if (!state) { return; }
     renderAutostart(state.autostart);
     if (log.stopping) {
@@ -922,8 +889,6 @@
     var prompt = next.system_prompt || {};
     $("systemMode").value = prompt.mode || "off";
     $("systemText").value = prompt.text || "";
-    $("profile").value = next.profile || "";
-    $("profiles").value = JSON.stringify(next.profiles || {}, null, 2);
     var history = next.inspector || {};
     $("insEnabled").checked = !!history.enabled;
     $("captureBodies").checked = !!history.capture_bodies;
@@ -932,7 +897,6 @@
     $("maxBodyBytes").value = String(history.max_body_bytes || 0);
     $("dbPath").value = (next.storage && next.storage.path) || "";
     updateParamsMeta();
-    updateProfilesMeta();
   }
 
   function loadState() {
@@ -962,26 +926,6 @@
     }
     var keys = Object.keys(parsed);
     meta.textContent = keys.length ? t("params.count", { n: keys.length }) : t("params.empty");
-    meta.className = "aside-note good";
-  }
-
-  function updateProfilesMeta() {
-    var meta = $("profilesMeta");
-    var parsed;
-    try {
-      parsed = JSON.parse($("profiles").value || "{}");
-    } catch (err) {
-      meta.textContent = t("profiles.badJSON");
-      meta.className = "aside-note bad";
-      return;
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      meta.textContent = t("profiles.notObject");
-      meta.className = "aside-note bad";
-      return;
-    }
-    var keys = Object.keys(parsed);
-    meta.textContent = keys.length ? t("profiles.count", { n: keys.length }) : t("profiles.empty");
     meta.className = "aside-note good";
   }
 
@@ -1151,7 +1095,7 @@
   });
 
   $("save").addEventListener("click", function () {
-    var params, profiles;
+    var params;
     try {
       params = JSON.parse($("params").value || "{}");
     } catch (err) {
@@ -1160,16 +1104,6 @@
     }
     if (!params || typeof params !== "object" || Array.isArray(params)) {
       fail("cfgMsg", t("msg.notObject"));
-      return;
-    }
-    try {
-      profiles = JSON.parse($("profiles").value || "{}");
-    } catch (err) {
-      fail("cfgMsg", t("msg.badProfiles", { msg: err.message }));
-      return;
-    }
-    if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) {
-      fail("cfgMsg", t("msg.profilesNotObject"));
       return;
     }
     busy(["save"], true);
@@ -1184,8 +1118,6 @@
         mode: $("systemMode").value,
         text: $("systemText").value
       },
-      profile: $("profile").value.trim(),
-      profiles: profiles,
       inspector: {
         enabled: $("insEnabled").checked,
         capture_bodies: $("captureBodies").checked,
@@ -1266,7 +1198,6 @@
 
   $("logPause").addEventListener("click", function () { setPaused(!log.paused); });
   $("params").addEventListener("input", updateParamsMeta);
-  $("profiles").addEventListener("input", updateProfilesMeta);
 
   // Both pages make the same choice: a saved browser choice wins, then the
   // browser locale. The server-seeded language only paints the page before

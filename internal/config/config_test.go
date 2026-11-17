@@ -58,96 +58,42 @@ func TestDefaults(t *testing.T) {
 	if cfg.MaxBodySize() != DefaultMaxBodySize {
 		t.Errorf("MaxBodySize = %d, want %d", cfg.MaxBodySize(), DefaultMaxBodySize)
 	}
-	want := map[string]string{
-		"temperature": "0.2",
-		"top_p":       "0.9",
-		"max_tokens":  "96",
-		"keep_alive":  `"30m"`,
+	resolved := cfg.Policy()
+	if resolved.Thinking != policy.ThinkingOff {
+		t.Errorf("Thinking = %q, want off", resolved.Thinking)
 	}
-	if len(cfg.Params()) != len(want) {
-		t.Fatalf("Params = %v, want %v", cfg.Params(), want)
+	if len(resolved.Params) != 0 {
+		t.Errorf("default policy injects params: %v", resolved.Params)
 	}
-	for k, v := range want {
-		if got := string(cfg.Params()[k]); got != v {
-			t.Errorf("Params[%q] = %s, want %s", k, got, v)
-		}
+	if !resolved.SystemPrompt.Empty() {
+		t.Errorf("default policy injects a system prompt: %+v", resolved.SystemPrompt)
 	}
 }
 
-func TestSetCoercion(t *testing.T) {
-	cfg := parse(t, append(tempPaths(t),
-		"--set", "temperature=0",
-		"--set", "top_p=0.5",
-		"--set", "keep_alive=1h",
-		"--set", "seed=42",
-		"--set", "flag=true",
-		"--set", "name=abc",
-		`--set`, `obj={"a":1}`,
-	), nil)
-
-	cases := map[string]string{
-		"temperature": "0",
-		"top_p":       "0.5",
-		"keep_alive":  `"1h"`,
-		"seed":        "42",
-		"flag":        "true",
-		"name":        `"abc"`,
-		"obj":         `{"a":1}`,
-	}
-	for key, want := range cases {
-		if got := string(cfg.Params()[key]); got != want {
-			t.Errorf("Params[%q] = %s, want %s", key, got, want)
-		}
-	}
-}
-
-func TestParamsFromConfigFile(t *testing.T) {
+func TestParamsAndSystemPromptAreIgnored(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"params": {"temperature": 0.5, "max_tokens": 12}}`), 0o600); err != nil {
+	file := `{"params": {"temperature": 0.5}, "system_prompt": {"mode": "override", "text": "fixed"}}`
+	if err := os.WriteFile(cfgPath, []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
-	if len(cfg.Params()) != 2 {
-		t.Fatalf("Params = %v, want exactly the file object", cfg.Params())
+	resolved := cfg.Policy()
+	if len(resolved.Params) != 0 {
+		t.Errorf("legacy params still injected: %v", resolved.Params)
 	}
-	if string(cfg.Params()["temperature"]) != "0.5" {
-		t.Errorf("temperature = %s", cfg.Params()["temperature"])
+	if !resolved.SystemPrompt.Empty() {
+		t.Errorf("legacy system prompt still injected: %+v", resolved.SystemPrompt)
 	}
-}
-
-func TestEmptyParamsFileInjectsNothing(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"params": {}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
-	if len(cfg.Params()) != 0 {
-		t.Errorf("empty params file produced %v, want empty", cfg.Params())
-	}
-}
-
-func TestParamPriorityFileSet(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"params": {"max_tokens": 12, "top_p": 0.1}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"), "--set", "max_tokens=7"}, nil)
-	if string(cfg.Params()["max_tokens"]) != "7" {
-		t.Errorf("--set should win over file params, got %s", cfg.Params()["max_tokens"])
-	}
-	if string(cfg.Params()["top_p"]) != "0.1" {
-		t.Errorf("other file params should survive, got %v", cfg.Params())
+	if _, ok := cfg.Snapshot().Extra["params"]; !ok {
+		t.Error("legacy params key was dropped instead of preserved as unknown")
 	}
 }
 
 func TestFileAndCLIPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	file := `{"host": "127.0.0.2", "port": 3000, "upstream": "http://file:11434", "timeout": 30, "params": {"seed": 1}}`
+	file := `{"host": "127.0.0.2", "port": 3000, "upstream": "http://file:11434", "timeout": 30}`
 	if err := os.WriteFile(cfgPath, []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -159,9 +105,6 @@ func TestFileAndCLIPrecedence(t *testing.T) {
 	}
 	if cfg.Timeout() != 30*time.Second {
 		t.Errorf("Timeout = %v, want 30s", cfg.Timeout())
-	}
-	if string(cfg.Params()["seed"]) != "1" || len(cfg.Params()) != 1 {
-		t.Errorf("Params = %v, want file params only", cfg.Params())
 	}
 
 	cfg = parse(t, []string{"--config", cfgPath, "--log", logPath, "--port", "5000", "--host", "127.0.0.3"}, nil)
@@ -191,7 +134,7 @@ func TestErrors(t *testing.T) {
 		args []string
 		env  map[string]string
 	}{
-		{"set without equals", []string{"--set", "temperature"}, nil},
+		{"removed --set flag", []string{"--set", "temperature=0"}, nil},
 		{"bad port", []string{"--port", "abc"}, nil},
 		{"port out of range", []string{"--port", "70000"}, nil},
 		{"unknown flag", []string{"--nope"}, nil},
@@ -284,7 +227,6 @@ func TestConfigFileAcceptsJSONC(t *testing.T) {
     // low temperature, trailing comma below is fine
     "temperature": 0.1,
   },
-  "profile": "raw", // trailing comma after this object is fine too
 }
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -298,11 +240,8 @@ func TestConfigFileAcceptsJSONC(t *testing.T) {
 	if got := cfg.Thinking(); got != policy.ThinkingOn {
 		t.Errorf("Thinking = %q, want on", got)
 	}
-	if got := string(cfg.Params()["temperature"]); got != "0.1" {
-		t.Errorf("temperature = %q", got)
-	}
-	if got := cfg.Snapshot().Profile; got != "raw" {
-		t.Errorf("Profile = %q, want raw", got)
+	if len(cfg.Policy().Params) != 0 {
+		t.Errorf("params from config file were injected: %v", cfg.Policy().Params)
 	}
 }
 
@@ -560,27 +499,6 @@ func TestListenPortNeverCollidesWithUpstream(t *testing.T) {
 	}
 }
 
-func TestCoerce(t *testing.T) {
-	cases := map[string]string{
-		"0.5":      "0.5",
-		"42":       "42",
-		"true":     "true",
-		"null":     "null",
-		"30m":      `"30m"`,
-		"1h":       `"1h"`,
-		`"quoted"`: `"quoted"`,
-		" 7 ":      "7",
-	}
-	for in, want := range cases {
-		if got := string(Coerce(in)); got != want {
-			t.Errorf("Coerce(%q) = %s, want %s", in, got, want)
-		}
-	}
-	if !json.Valid(Coerce("a<b")) {
-		t.Error("Coerce produced invalid JSON for a string with markup")
-	}
-}
-
 func TestApplyPersistsAndUpdates(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
@@ -589,7 +507,6 @@ func TestApplyPersistsAndUpdates(t *testing.T) {
 	payload := map[string]json.RawMessage{
 		"upstream":       json.RawMessage(`"http://127.0.0.1:11435/"`),
 		"timeout":        json.RawMessage(`30`),
-		"params":         json.RawMessage(`{"temperature":0}`),
 		"max_concurrent": json.RawMessage(`3`),
 		"max_body_size":  json.RawMessage(`2048`),
 	}
@@ -601,9 +518,6 @@ func TestApplyPersistsAndUpdates(t *testing.T) {
 	}
 	if got := cfg.Timeout(); got != 30*time.Second {
 		t.Errorf("Timeout = %v", got)
-	}
-	if params := cfg.Params(); len(params) != 1 || string(params["temperature"]) != "0" {
-		t.Errorf("Params = %v", params)
 	}
 	if cfg.MaxConcurrent() != 3 || cfg.MaxBodySize() != 2048 {
 		t.Errorf("limits = %d/%d", cfg.MaxConcurrent(), cfg.MaxBodySize())
@@ -637,8 +551,6 @@ func TestApplyRejectsBadPayloads(t *testing.T) {
 	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
 
 	cases := map[string]string{
-		"array params":     `{"params":[1,2]}`,
-		"null params":      `{"params":null}`,
 		"ftp upstream":     `{"upstream":"ftp://x"}`,
 		"blank upstream":   `{"upstream":"   "}`,
 		"numeric upstream": `{"upstream":123}`,
@@ -657,9 +569,6 @@ func TestApplyRejectsBadPayloads(t *testing.T) {
 			if cfg.Upstream() != DefaultUpstream || cfg.Timeout() != DefaultTimeout {
 				t.Errorf("rejected Apply mutated config: %+v", cfg.Snapshot())
 			}
-			if len(cfg.Params()) != len(DefaultParams()) {
-				t.Errorf("rejected Apply mutated params: %v", cfg.Params())
-			}
 		})
 	}
 	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
@@ -670,8 +579,10 @@ func TestApplyRejectsBadPayloads(t *testing.T) {
 func TestSaveWritesCurrentDocument(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "nested", "config.json")
-	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"),
-		"--set", "temperature=0.4"}, nil)
+	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
+	if err := cfg.Apply(map[string]json.RawMessage{"thinking": json.RawMessage(`"on"`)}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -683,9 +594,11 @@ func TestSaveWritesCurrentDocument(t *testing.T) {
 	if err := json.Unmarshal(data, &document); err != nil {
 		t.Fatal(err)
 	}
-	params, ok := document["params"].(map[string]any)
-	if !ok || params["temperature"] != 0.4 {
-		t.Errorf("params = %v", document["params"])
+	if document["thinking"] != "on" {
+		t.Errorf("thinking = %v", document["thinking"])
+	}
+	if _, ok := document["params"]; ok {
+		t.Errorf("params written to a new config: %v", document["params"])
 	}
 }
 
@@ -743,7 +656,7 @@ func TestUsageMentionsCommands(t *testing.T) {
 	}
 }
 
-func TestConfigFileThinkingAndSystemPrompt(t *testing.T) {
+func TestConfigFileThinkingAndLegacySystemPrompt(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 	file := `{"thinking":"passthrough","system_prompt":{"mode":"override","text":"fixed"}}`
@@ -751,68 +664,47 @@ func TestConfigFileThinkingAndSystemPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
-	resolved, _ := cfg.Policy("")
+	resolved := cfg.Policy()
 	if resolved.Thinking != policy.ThinkingPassthrough {
 		t.Errorf("thinking = %q", resolved.Thinking)
 	}
-	if resolved.SystemPrompt.Mode != policy.SystemPromptOverride || resolved.SystemPrompt.Text != "fixed" {
-		t.Errorf("system prompt = %+v", resolved.SystemPrompt)
+	if !resolved.SystemPrompt.Empty() {
+		t.Errorf("legacy system prompt still applied: %+v", resolved.SystemPrompt)
 	}
 }
 
-func TestProfiles(t *testing.T) {
-	defaults := DefaultProfiles()
-	for _, name := range []string{"nothink", "raw", "thinking"} {
-		if _, ok := defaults[name]; !ok {
-			t.Errorf("built-in profile %q missing", name)
-		}
-	}
-	if config := parse(t, tempPaths(t), nil); config.ActiveProfile() != "" {
-		t.Errorf("active profile = %q, want empty", config.ActiveProfile())
-	}
-
+func TestRemovedProfileSettingsAreRejected(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	file := `{"profile":"fast","profiles":{"fast":{"thinking":"off","params":{"temperature":0.1},"system_prompt":{"mode":"inject-if-missing","text":"fast"}}}}`
-	if err := os.WriteFile(cfgPath, []byte(file), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
-	if cfg.ActiveProfile() != "fast" {
-		t.Errorf("active profile = %q", cfg.ActiveProfile())
-	}
-	resolved, ok := cfg.Policy("")
-	if !ok || resolved.Thinking != policy.ThinkingOff || resolved.SystemPrompt.Text != "fast" {
-		t.Errorf("policy = %+v (ok %v)", resolved, ok)
-	}
-	if string(resolved.Params["temperature"]) != "0.1" {
-		t.Errorf("params = %v", resolved.Params)
-	}
-
-	raw, ok := cfg.Policy("raw")
-	if !ok || raw.Thinking != policy.ThinkingPassthrough || len(raw.Params) != 0 {
-		t.Errorf("raw profile = %+v (ok %v)", raw, ok)
-	}
-	if _, ok := cfg.Policy("nope"); ok {
-		t.Error("unknown profile resolved")
+	for name, file := range map[string]string{
+		"profiles": `{"profiles":{"fast":{"thinking":"off"}}}`,
+		"profile":  `{"profile":"fast"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, name+".json")
+			if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Parse([]string{"--config", path, "--log", filepath.Join(dir, "p.log"),
+				"--db", filepath.Join(dir, "workbench.db")}, envOf(nil))
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("Parse error = %v, want the removed key %q", err, name)
+			}
+		})
 	}
 
-	// --set still wins over the selected profile.
-	withSet := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log"),
-		"--set", "temperature=0.9"}, nil)
-	selected, _ := withSet.Policy("")
-	if string(selected.Params["temperature"]) != "0.9" {
-		t.Errorf("--set did not override profile: %v", selected.Params)
+	cfg := parse(t, tempPaths(t), nil)
+	if err := cfg.Apply(map[string]json.RawMessage{"profiles": json.RawMessage(`{}`)}); err == nil {
+		t.Error("Apply accepted profiles")
+	}
+	if err := cfg.Apply(map[string]json.RawMessage{"profile": json.RawMessage(`""`)}); err == nil {
+		t.Error("Apply accepted profile")
 	}
 }
 
 func TestInvalidPolicyConfig(t *testing.T) {
 	dir := t.TempDir()
 	for name, file := range map[string]string{
-		"bad thinking":        `{"thinking":"maybe"}`,
-		"bad system mode":     `{"system_prompt":{"mode":"sometimes"}}`,
-		"profiles not object": `{"profiles":[]}`,
-		"profile bad params":  `{"profiles":{"x":{"params":[]}}}`,
+		"bad thinking": `{"thinking":"maybe"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".json")
@@ -840,20 +732,14 @@ func TestApplyPolicyAndPreservesUnknownKeys(t *testing.T) {
 	cfg := parse(t, []string{"--config", cfgPath, "--log", filepath.Join(dir, "p.log")}, nil)
 
 	payload := map[string]json.RawMessage{
-		"thinking":      json.RawMessage(`"on"`),
-		"system_prompt": json.RawMessage(`{"mode":"inject-if-missing","text":"hi"}`),
-		"profiles":      json.RawMessage(`{"custom":{"thinking":"off","params":{"top_k":5}}}`),
-		"profile":       json.RawMessage(`"custom"`),
+		"thinking": json.RawMessage(`"on"`),
 	}
 	if err := cfg.Apply(payload); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	resolved, ok := cfg.Policy("")
-	if !ok || resolved.Thinking != policy.ThinkingOff || string(resolved.Params["top_k"]) != "5" {
-		t.Errorf("policy = %+v (ok %v)", resolved, ok)
-	}
-	if cfg.ActiveProfile() != "custom" {
-		t.Errorf("active profile = %q", cfg.ActiveProfile())
+	resolved := cfg.Policy()
+	if resolved.Thinking != policy.ThinkingOn {
+		t.Errorf("policy = %+v", resolved)
 	}
 
 	data, err := os.ReadFile(cfgPath)
@@ -867,8 +753,11 @@ func TestApplyPolicyAndPreservesUnknownKeys(t *testing.T) {
 	if _, ok := document["inspector"]; !ok {
 		t.Errorf("unknown key was dropped: %v", document)
 	}
-	if document["thinking"] != "on" || document["profile"] != "custom" {
+	if document["thinking"] != "on" {
 		t.Errorf("document = %v", document)
+	}
+	if _, ok := document["profiles"]; ok {
+		t.Errorf("removed key was written back: %v", document)
 	}
 
 	// Rejected updates must not change the live policy.

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { deleteRequest, exportURL, getRequest, listRequests } from "./api";
+import Select from "./components/Select";
 import TokenUsage from "./components/TokenUsage";
 import { useI18n } from "./i18n";
 import type { Filters, Health, RequestDetail, RequestList } from "./types";
@@ -141,12 +142,16 @@ export default function RequestsPage({ selected, onSelect, health, onCreateExper
           value={filters.q}
           onChange={(event) => changeFilters({ q: event.target.value })}
         />
-        <select value={filters.source} onChange={(event) => changeFilters({ source: event.target.value })}>
-          <option value="">{t("requests.sourceAll")}</option>
-          <option value="proxy">proxy</option>
-          <option value="playground">playground</option>
-          <option value="experiment">experiment</option>
-        </select>
+        <Select
+          value={filters.source}
+          onChange={(source) => changeFilters({ source })}
+          options={[
+            { value: "", label: t("requests.sourceAll") },
+            { value: "proxy", label: "proxy" },
+            { value: "playground", label: "playground" },
+            { value: "experiment", label: "experiment" },
+          ]}
+        />
         <input
           className="status-input"
           placeholder={t("requests.statusHint")}

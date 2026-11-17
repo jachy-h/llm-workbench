@@ -16,20 +16,7 @@ import (
 	"time"
 
 	"github.com/jachy-h/llm-workbench/internal/inspect"
-	"github.com/jachy-h/llm-workbench/internal/policy"
 )
-
-func params(raw string) map[string]json.RawMessage {
-	var out map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		panic(err)
-	}
-	return out
-}
-
-func defaultParams() map[string]json.RawMessage {
-	return params(`{"temperature":0.2,"top_p":0.9,"max_tokens":96,"keep_alive":"30m"}`)
-}
 
 func newUpstream(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
@@ -47,7 +34,6 @@ func newProxy(t *testing.T, upstream *httptest.Server, mutate func(*Options)) *h
 	opts := Options{
 		Upstream:       u,
 		Timeout:        5 * time.Second,
-		Params:         defaultParams(),
 		MaxConcurrent:  8,
 		MaxBodySize:    1 << 20,
 		AcquireTimeout: 200 * time.Millisecond,
@@ -137,11 +123,11 @@ func forwardedBody(t *testing.T, echo []byte) map[string]any {
 	return decodeMap(t, []byte(raw))
 }
 
-func TestV1Injection(t *testing.T) {
+func TestV1OnlyRewritesThinking(t *testing.T) {
 	up := newUpstream(t, echoHandler(t))
 	p := newProxy(t, up, nil)
 
-	resp, data := post(t, p.URL+"/v1/chat/completions", `{"model":"m","temperature":1}`)
+	resp, data := post(t, p.URL+"/v1/chat/completions", `{"model":"m","temperature":1,"top_p":0.5}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
 	}
@@ -149,17 +135,13 @@ func TestV1Injection(t *testing.T) {
 	if got["reasoning_effort"] != "none" {
 		t.Errorf("reasoning_effort = %v, want none", got["reasoning_effort"])
 	}
-	if got["temperature"] != float64(1) {
-		t.Errorf("temperature = %v, want client value 1", got["temperature"])
+	if got["temperature"] != float64(1) || got["top_p"] != 0.5 {
+		t.Errorf("client params changed: %v", got)
 	}
-	if got["max_tokens"] != float64(96) {
-		t.Errorf("max_tokens = %v, want injected 96", got["max_tokens"])
-	}
-	if got["top_p"] != 0.9 || got["keep_alive"] != "30m" || got["model"] != "m" {
-		t.Errorf("unexpected injected body: %v", got)
-	}
-	if _, present := got["think"]; present {
-		t.Error("think must be removed on /v1")
+	for _, key := range []string{"max_tokens", "keep_alive", "think"} {
+		if _, present := got[key]; present {
+			t.Errorf("%s must not be injected/kept on /v1: %v", key, got[key])
+		}
 	}
 }
 
@@ -177,11 +159,11 @@ func TestV1ForcesOffEvenWhenClientAsksForThinking(t *testing.T) {
 	}
 }
 
-func TestNativeInjection(t *testing.T) {
+func TestNativeOnlyRewritesThinking(t *testing.T) {
 	up := newUpstream(t, echoHandler(t))
 	p := newProxy(t, up, nil)
 
-	_, data := post(t, p.URL+"/api/chat", `{"model":"m","think":true,"messages":[]}`)
+	_, data := post(t, p.URL+"/api/chat", `{"model":"m","think":true,"messages":[],"options":{"temperature":1,"num_predict":7}}`)
 	got := forwardedBody(t, data)
 	if got["think"] != false {
 		t.Errorf("think = %v, want false", got["think"])
@@ -190,11 +172,11 @@ func TestNativeInjection(t *testing.T) {
 	if !ok {
 		t.Fatalf("options = %v", got["options"])
 	}
-	if options["num_predict"] != float64(96) || options["temperature"] != 0.2 {
-		t.Errorf("options = %v", options)
+	if options["num_predict"] != float64(7) || options["temperature"] != float64(1) {
+		t.Errorf("client options changed: %v", options)
 	}
-	if got["keep_alive"] != "30m" {
-		t.Errorf("keep_alive = %v, want top level", got["keep_alive"])
+	if _, present := got["keep_alive"]; present {
+		t.Errorf("keep_alive was injected: %v", got["keep_alive"])
 	}
 	if _, present := got["reasoning_effort"]; present {
 		t.Error("reasoning_effort must be removed on /api/chat")
@@ -415,7 +397,7 @@ func TestBodyLimit(t *testing.T) {
 		t.Fatalf("at-limit status = %d, body = %s", resp.StatusCode, data)
 	}
 	if forwardedBody(t, data)["reasoning_effort"] != "none" {
-		t.Error("at-limit body was not injected")
+		t.Error("at-limit body was not rewritten")
 	}
 
 	overLimit := `{"model":"abcde"}` // 17 bytes
@@ -652,131 +634,45 @@ func TestUpstreamDisconnectMidStream(t *testing.T) {
 	}
 }
 
-type profileSettings struct {
-	upstream *url.URL
-	timeout  time.Duration
-	params   map[string]json.RawMessage
-	profiles map[string]policy.Policy
-}
-
-func (s profileSettings) UpstreamURL() *url.URL              { return s.upstream }
-func (s profileSettings) Timeout() time.Duration             { return s.timeout }
-func (s profileSettings) Params() map[string]json.RawMessage { return s.params }
-func (s profileSettings) Policy(name string) (policy.Policy, bool) {
-	if name == "" {
-		return policy.New(s.params), true
-	}
-	resolved, ok := s.profiles[name]
-	return resolved, ok
-}
-
-func TestWorkbenchThinkingHeader(t *testing.T) {
-	up := newUpstream(t, echoHandler(t))
-	p := newProxy(t, up, nil)
-
-	headers := map[string]string{
-		"Content-Type":         "application/json",
-		"X-Workbench-Thinking": "passthrough",
-	}
-	resp, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions",
-		`{"model":"m","think":true,"reasoning_effort":"high"}`, headers)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d: %s", resp.StatusCode, data)
-	}
-	got := forwardedBody(t, data)
-	if got["think"] != true || got["reasoning_effort"] != "high" {
-		t.Errorf("passthrough changed thinking fields: %v", got)
-	}
-	if got["temperature"] != 0.2 {
-		t.Errorf("params should still be injected: %v", got)
-	}
-	envelope := decodeMap(t, data)
-	upstreamHeaders := envelope["headers"].(map[string]any)
-	if _, present := upstreamHeaders["X-Workbench-Thinking"]; present {
-		t.Error("control header was forwarded upstream")
-	}
-}
-
-func TestWorkbenchThinkingHeaderOn(t *testing.T) {
-	up := newUpstream(t, echoHandler(t))
-	p := newProxy(t, up, nil)
-
-	headers := map[string]string{
-		"Content-Type":         "application/json",
-		"X-Workbench-Thinking": "on",
-	}
-	_, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions",
-		`{"model":"m","think":true,"reasoning_effort":"high"}`, headers)
-	got := forwardedBody(t, data)
-	if got["reasoning_effort"] != "high" {
-		t.Errorf("reasoning_effort = %v", got["reasoning_effort"])
-	}
-	if _, present := got["think"]; present {
-		t.Error("think should be removed on /v1 even when thinking is on")
-	}
-}
-
-func TestWorkbenchProfileHeader(t *testing.T) {
-	up := newUpstream(t, echoHandler(t))
-	base, _ := url.Parse(up.URL)
-	settings := profileSettings{
-		upstream: base,
-		timeout:  5 * time.Second,
-		params:   defaultParams(),
-		profiles: map[string]policy.Policy{
-			"raw": {Thinking: policy.ThinkingPassthrough, Params: map[string]json.RawMessage{}},
-		},
-	}
-	p := newProxy(t, up, func(o *Options) { o.Settings = settings })
-
-	headers := map[string]string{
-		"Content-Type":        "application/json",
-		"X-Workbench-Profile": "raw",
-	}
-	_, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions",
-		`{"model":"m","think":true,"reasoning_effort":"high","temperature":1}`, headers)
-	got := forwardedBody(t, data)
-	if got["think"] != true || got["reasoning_effort"] != "high" || got["temperature"] != float64(1) {
-		t.Errorf("raw profile changed the body: %v", got)
-	}
-	if _, present := got["max_tokens"]; present {
-		t.Error("raw profile injected params")
-	}
-	if envelope := decodeMap(t, data); envelope["headers"].(map[string]any)["X-Workbench-Profile"] != nil {
-		t.Error("profile header was forwarded upstream")
-	}
-}
-
-func TestUnknownProfileIsRejected(t *testing.T) {
+func TestRemovedProfileHeaderIsRejected(t *testing.T) {
 	called := false
 	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		_, _ = io.WriteString(w, "{}")
 	})
 	p := newProxy(t, up, nil)
+
 	headers := map[string]string{
 		"Content-Type":        "application/json",
-		"X-Workbench-Profile": "missing",
+		"X-Workbench-Profile": "raw",
 	}
 	resp, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions", `{"model":"m"}`, headers)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d: %s", resp.StatusCode, data)
 	}
 	if called {
-		t.Error("unknown profile reached the upstream")
+		t.Error("the removed profile header reached the upstream")
 	}
 }
 
-func TestInvalidThinkingHeaderIsRejected(t *testing.T) {
-	up := newUpstream(t, echoHandler(t))
+func TestRemovedThinkingHeaderIsRejected(t *testing.T) {
+	called := false
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, "{}")
+	})
 	p := newProxy(t, up, nil)
+
 	headers := map[string]string{
 		"Content-Type":         "application/json",
-		"X-Workbench-Thinking": "maybe",
+		"X-Workbench-Thinking": "on",
 	}
 	resp, data := do(t, http.MethodPost, p.URL+"/v1/chat/completions", `{"model":"m"}`, headers)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d: %s", resp.StatusCode, data)
+	}
+	if called {
+		t.Error("the removed thinking header reached the upstream")
 	}
 }
 

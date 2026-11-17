@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
 
-export type SearchSelectOption = {
+export type SelectOption = {
   value: string;
   label: string;
   hint?: string;
@@ -12,9 +12,11 @@ export type SearchSelectOption = {
 
 type Props = {
   value: string;
-  options: SearchSelectOption[];
+  options: SelectOption[];
   onChange: (value: string) => void;
   placeholder?: string;
+  /** Show a search field inside the popover. */
+  searchable?: boolean;
   searchPlaceholder?: string;
   emptyText?: string;
   disabled?: boolean;
@@ -34,11 +36,12 @@ const POPOVER_GAP = 4;
 const VIEWPORT_MARGIN = 8;
 const POPOVER_MAX_HEIGHT = 300;
 
-export default function SearchSelect({
+export default function Select({
   value,
   options,
   onChange,
   placeholder,
+  searchable = false,
   searchPlaceholder,
   emptyText,
   disabled = false,
@@ -62,13 +65,14 @@ export default function SearchSelect({
   );
 
   const filtered = useMemo(() => {
+    if (!searchable) return options;
     const needle = query.trim().toLowerCase();
     if (!needle) return options;
     return options.filter((option) => (
       [option.label, option.value, option.hint, option.keywords]
         .some((text) => text?.toLowerCase().includes(needle))
     ));
-  }, [options, query]);
+  }, [options, query, searchable]);
 
   const updatePosition = useCallback(() => {
     const trigger = triggerRef.current;
@@ -78,7 +82,8 @@ export default function SearchSelect({
     const above = rect.top - POPOVER_GAP - VIEWPORT_MARGIN;
     const openUp = below < 220 && above > below;
     const room = Math.max(96, openUp ? above : below);
-    const width = Math.min(Math.max(rect.width, 220), window.innerWidth - VIEWPORT_MARGIN * 2);
+    const minWidth = searchable ? 220 : rect.width;
+    const width = Math.min(Math.max(rect.width, minWidth), window.innerWidth - VIEWPORT_MARGIN * 2);
     const left = Math.min(
       Math.max(rect.left, VIEWPORT_MARGIN),
       window.innerWidth - width - VIEWPORT_MARGIN,
@@ -96,7 +101,7 @@ export default function SearchSelect({
         width,
         maxHeight: Math.min(room, POPOVER_MAX_HEIGHT),
       });
-  }, []);
+  }, [searchable]);
 
   useEffect(() => {
     if (!open) return;
@@ -146,8 +151,8 @@ export default function SearchSelect({
     setQuery("");
   }
 
-  function choose(option: SearchSelectOption) {
-    if (option.disabled) return;
+  function choose(option: SelectOption | undefined) {
+    if (!option || option.disabled) return;
     onChange(option.value);
     closeSelect();
     triggerRef.current?.focus();
@@ -163,7 +168,43 @@ export default function SearchSelect({
     setActiveIndex(next);
   }
 
+  function jumpToLetter(key: string) {
+    const needle = key.toLowerCase();
+    const match = filtered.findIndex((option) => (
+      !option.disabled && option.label.toLowerCase().startsWith(needle)
+    ));
+    if (match < 0) return false;
+    setActiveIndex(match);
+    return true;
+  }
+
   function onTriggerKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (open && !searchable) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        moveActive(1);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        moveActive(-1);
+        return;
+      }
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        choose(filtered[activeIndex]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSelect();
+        return;
+      }
+      if (event.key === "Tab") {
+        closeSelect();
+        return;
+      }
+    }
     if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       openSelect();
@@ -171,7 +212,11 @@ export default function SearchSelect({
     }
     if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault();
-      openSelect(event.key);
+      if (searchable) {
+        openSelect(event.key);
+        return;
+      }
+      if (jumpToLetter(event.key)) setOpen(true);
     }
   }
 
@@ -184,8 +229,7 @@ export default function SearchSelect({
       moveActive(-1);
     } else if (event.key === "Enter") {
       event.preventDefault();
-      const option = filtered[activeIndex];
-      if (option) choose(option);
+      choose(filtered[activeIndex]);
     } else if (event.key === "Escape") {
       event.preventDefault();
       closeSelect();
@@ -199,29 +243,32 @@ export default function SearchSelect({
   const display = selected?.label ?? value;
 
   return (
-    <div ref={wrapperRef} className={`search-select${className ? ` ${className}` : ""}`}>
+    <div ref={wrapperRef} className={`select${className ? ` ${className}` : ""}`}>
       <button
         ref={triggerRef}
         type="button"
         id={id}
-        className="search-select-trigger"
+        className="select-trigger"
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
+        aria-activedescendant={
+          open && !searchable && filtered[activeIndex] ? `${listId}-${activeIndex}` : undefined
+        }
         disabled={disabled}
         onClick={() => (open ? closeSelect() : openSelect())}
         onKeyDown={onTriggerKeyDown}
       >
-        <span className={`search-select-value${display ? "" : " placeholder"}`}>
+        <span className={`select-value${display ? "" : " placeholder"}`}>
           {display || placeholder || t("select.none")}
         </span>
-        <span className="search-select-caret" aria-hidden="true">▾</span>
+        <span className="select-caret" aria-hidden="true">▾</span>
       </button>
       {open && placement ? createPortal(
         <div
           ref={popoverRef}
-          className="search-select-popover"
+          className="select-popover"
           style={{
             top: placement.top,
             bottom: placement.bottom,
@@ -230,25 +277,27 @@ export default function SearchSelect({
             maxHeight: placement.maxHeight,
           }}
         >
-          <div className="search-select-search">
-            <input
-              autoFocus
-              value={query}
-              placeholder={searchPlaceholder ?? t("select.searchPlaceholder")}
-              aria-label={searchPlaceholder ?? t("select.searchPlaceholder")}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setActiveIndex(0);
-              }}
-              onKeyDown={onSearchKeyDown}
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded={open}
-              aria-controls={listId}
-              aria-activedescendant={filtered[activeIndex] ? `${listId}-${activeIndex}` : undefined}
-            />
-          </div>
-          <ul ref={listRef} className="search-select-list" id={listId} role="listbox">
+          {searchable ? (
+            <div className="select-search">
+              <input
+                autoFocus
+                value={query}
+                placeholder={searchPlaceholder ?? t("select.searchPlaceholder")}
+                aria-label={searchPlaceholder ?? t("select.searchPlaceholder")}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setActiveIndex(0);
+                }}
+                onKeyDown={onSearchKeyDown}
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={open}
+                aria-controls={listId}
+                aria-activedescendant={filtered[activeIndex] ? `${listId}-${activeIndex}` : undefined}
+              />
+            </div>
+          ) : null}
+          <ul ref={listRef} className="select-list" id={listId} role="listbox">
             {filtered.map((option, index) => (
               <li
                 key={option.value}
@@ -257,18 +306,18 @@ export default function SearchSelect({
                 role="option"
                 aria-selected={option.value === value}
                 aria-disabled={option.disabled || undefined}
-                className={`search-select-option${index === activeIndex ? " active" : ""}`}
+                className={`select-option${index === activeIndex ? " active" : ""}`}
                 onMouseEnter={() => setActiveIndex(index)}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => choose(option)}
               >
-                <span className="search-select-option-label">{option.label}</span>
-                {option.hint ? <span className="search-select-option-hint">{option.hint}</span> : null}
+                <span className="select-option-label">{option.label}</span>
+                {option.hint ? <span className="select-option-hint">{option.hint}</span> : null}
               </li>
             ))}
           </ul>
           {!filtered.length ? (
-            <div className="search-select-empty">{emptyText ?? t("select.empty")}</div>
+            <div className="select-empty">{emptyText ?? t("select.empty")}</div>
           ) : null}
         </div>,
         document.body,

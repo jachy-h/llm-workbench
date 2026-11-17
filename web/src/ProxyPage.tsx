@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import Select from "./components/Select";
 import { useI18n } from "./i18n";
 import type { MsgKey } from "./i18n";
 import {
@@ -12,19 +13,12 @@ import {
 } from "./portalApi";
 import type { PortalController } from "./usePortal";
 
-type Translate = (key: MsgKey, vars?: Record<string, string | number>) => string;
-
 type Form = {
   upstream: string;
   timeout: string;
-  params: string;
   maxConcurrent: string;
   maxBodySize: string;
   thinking: string;
-  systemMode: string;
-  systemText: string;
-  profile: string;
-  profiles: string;
 };
 
 type Message = {
@@ -32,48 +26,24 @@ type Message = {
   kind: "" | "ok" | "err";
 };
 
-type Meta = {
-  text: string;
-  bad: boolean;
+// Each mode has a different effect per API flavour. Keeping the keys here
+// makes the UI state the exact fields instead of a vague "thinking on/off".
+const thinkingEffects: Record<string, { v1: MsgKey; native: MsgKey }> = {
+  off: { v1: "proxy.thinkingV1Off", native: "proxy.thinkingNativeOff" },
+  on: { v1: "proxy.thinkingV1On", native: "proxy.thinkingNativeOn" },
+  passthrough: {
+    v1: "proxy.thinkingV1Passthrough",
+    native: "proxy.thinkingNativePassthrough",
+  },
 };
 
 function formFromState(state: PortalState): Form {
   return {
     upstream: state.upstream,
     timeout: String(state.timeout),
-    params: JSON.stringify(state.params ?? {}, null, 2),
     maxConcurrent: String(state.max_concurrent),
     maxBodySize: String(state.max_body_size),
     thinking: state.thinking || "off",
-    systemMode: state.system_prompt?.mode || "off",
-    systemText: state.system_prompt?.text || "",
-    profile: state.profile || "",
-    profiles: JSON.stringify(state.profiles ?? {}, null, 2),
-  };
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function jsonMeta(raw: string, t: Translate, kind: "params" | "profiles"): Meta {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw || "{}");
-  } catch {
-    return { text: t("proxy.invalidJSON"), bad: true };
-  }
-  if (!isObject(parsed)) {
-    return { text: t("proxy.expectedObject"), bad: true };
-  }
-  const count = Object.keys(parsed).length;
-  if (!count) return { text: t("proxy.emptyObject"), bad: false };
-  return {
-    text:
-      kind === "params"
-        ? t("proxy.paramsCount", { n: count })
-        : t("proxy.profilesCount", { n: count }),
-    bad: false,
   };
 }
 
@@ -351,15 +321,6 @@ export default function ProxyPage({
     if (portal.state && !form) setForm(formFromState(portal.state));
   }, [portal.state, form]);
 
-  const paramsMeta = useMemo(
-    () => (form ? jsonMeta(form.params, t, "params") : { text: "", bad: false }),
-    [form?.params, t],
-  );
-  const profilesMeta = useMemo(
-    () => (form ? jsonMeta(form.profiles, t, "profiles") : { text: "", bad: false }),
-    [form?.profiles, t],
-  );
-
   if (!portal.state && portal.error) {
     return (
       <main className="proxy-shell">
@@ -406,45 +367,14 @@ export default function ProxyPage({
     if (!form) return;
     setMessage({ text: "", kind: "" });
 
-    let params: unknown;
-    try {
-      params = JSON.parse(form.params || "{}");
-    } catch (err) {
-      setMessage({ text: t("proxy.paramsInvalid", { msg: errorMessage(err) }), kind: "err" });
-      return;
-    }
-    if (!isObject(params)) {
-      setMessage({ text: t("proxy.paramsNotObject"), kind: "err" });
-      return;
-    }
-
-    let profiles: unknown;
-    try {
-      profiles = JSON.parse(form.profiles || "{}");
-    } catch (err) {
-      setMessage({ text: t("proxy.profilesInvalid", { msg: errorMessage(err) }), kind: "err" });
-      return;
-    }
-    if (!isObject(profiles)) {
-      setMessage({ text: t("proxy.profilesNotObject"), kind: "err" });
-      return;
-    }
-
     setSaving(true);
     try {
       const next = await savePortalConfig({
         upstream: form.upstream.trim(),
         timeout: Number.parseFloat(form.timeout),
-        params,
         max_concurrent: Number.parseInt(form.maxConcurrent, 10),
         max_body_size: Number.parseInt(form.maxBodySize, 10),
         thinking: form.thinking,
-        system_prompt: {
-          mode: form.systemMode,
-          text: form.systemText,
-        },
-        profile: form.profile.trim(),
-        profiles,
       });
       portal.setState(next);
       setForm(formFromState(next));
@@ -469,12 +399,9 @@ export default function ProxyPage({
             ...current,
             upstream: defaults.upstream,
             timeout: String(defaults.timeout),
-            params: JSON.stringify(defaults.params ?? {}, null, 2),
             maxConcurrent: String(defaults.max_concurrent),
             maxBodySize: String(defaults.max_body_size),
             thinking: defaults.thinking || "off",
-            systemMode: defaults.system_prompt?.mode || "off",
-            systemText: defaults.system_prompt?.text || "",
           }
         : current,
     );
@@ -569,89 +496,30 @@ export default function ProxyPage({
                 <span className="aside-note">{t("proxy.panelPolicyNote")}</span>
               </div>
               <div className="proxy-section-body">
-                <div className="proxy-grid proxy-grid-2">
-                  <label>
-                    <span>{t("proxy.fieldThinking")}</span>
-                    <select
-                      value={form.thinking}
-                      onChange={(event) => update("thinking", event.target.value)}
-                    >
-                      <option value="off">{t("proxy.thinkingOff")}</option>
-                      <option value="on">{t("proxy.thinkingOn")}</option>
-                      <option value="passthrough">{t("proxy.thinkingPassthrough")}</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t("proxy.fieldSystemMode")}</span>
-                    <select
-                      value={form.systemMode}
-                      onChange={(event) => update("systemMode", event.target.value)}
-                    >
-                      <option value="off">{t("proxy.promptOff")}</option>
-                      <option value="inject-if-missing">{t("proxy.promptInject")}</option>
-                      <option value="override">{t("proxy.promptOverride")}</option>
-                    </select>
-                  </label>
-                </div>
-                <label className="proxy-growable">
-                  <span>{t("proxy.fieldSystemText")}</span>
-                  <textarea
-                    spellCheck={false}
-                    autoComplete="off"
-                    value={form.systemText}
-                    onChange={(event) => update("systemText", event.target.value)}
+                <label>
+                  <span>{t("proxy.fieldThinking")}</span>
+                  <Select
+                    value={form.thinking}
+                    onChange={(thinking) => update("thinking", thinking)}
+                    options={[
+                      { value: "off", label: t("proxy.thinkingOff") },
+                      { value: "on", label: t("proxy.thinkingOn") },
+                      { value: "passthrough", label: t("proxy.thinkingPassthrough") },
+                    ]}
                   />
                 </label>
-                <label className="proxy-growable">
-                  <span className="proxy-label-row">
-                    <span>{t("proxy.fieldParams")}</span>
-                    <span className={`aside-note ${paramsMeta.bad ? "bad" : "good"}`}>
-                      {paramsMeta.text}
-                    </span>
-                  </span>
-                  <textarea
-                    spellCheck={false}
-                    autoComplete="off"
-                    placeholder='{"max_tokens": 96, "temperature": 0.2}'
-                    value={form.params}
-                    onChange={(event) => update("params", event.target.value)}
-                  />
-                </label>
-              </div>
-            </section>
-
-            <section className="proxy-section">
-              <div className="proxy-section-head">
-                <h2>{t("proxy.panelProfiles")}</h2>
-                <span className="aside-note">{t("proxy.panelProfilesNote")}</span>
-              </div>
-              <div className="proxy-section-body">
-                <div className="proxy-split">
-                  <label>
-                    <span>{t("proxy.fieldProfile")}</span>
-                    <input
-                      type="text"
-                      spellCheck={false}
-                      autoComplete="off"
-                      placeholder="nothink / raw / thinking"
-                      value={form.profile}
-                      onChange={(event) => update("profile", event.target.value)}
-                    />
-                  </label>
-                  <label className="proxy-growable">
-                    <span className="proxy-label-row">
-                      <span>{t("proxy.fieldProfiles")}</span>
-                      <span className={`aside-note ${profilesMeta.bad ? "bad" : "good"}`}>
-                        {profilesMeta.text}
-                      </span>
-                    </span>
-                    <textarea
-                      spellCheck={false}
-                      autoComplete="off"
-                      value={form.profiles}
-                      onChange={(event) => update("profiles", event.target.value)}
-                    />
-                  </label>
+                <div className="proxy-thinking-rules">
+                  <p className="proxy-hint">{t("proxy.thinkingOnly")}</p>
+                  <dl className="proxy-thinking-list">
+                    <div>
+                      <dt>/v1/chat/completions</dt>
+                      <dd>{t(thinkingEffects[form.thinking]?.v1 ?? thinkingEffects.off.v1)}</dd>
+                    </div>
+                    <div>
+                      <dt>/api/chat</dt>
+                      <dd>{t(thinkingEffects[form.thinking]?.native ?? thinkingEffects.off.native)}</dd>
+                    </div>
+                  </dl>
                 </div>
               </div>
             </section>

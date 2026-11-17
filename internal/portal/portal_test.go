@@ -155,13 +155,18 @@ func TestStateShape(t *testing.T) {
 	state := decodeJSON(t, rec)
 
 	for _, key := range []string{
-		"version", "pid", "listen", "upstream", "timeout", "params", "log_path",
+		"version", "pid", "listen", "upstream", "timeout", "log_path",
 		"log_capacity", "config_path", "launch_ready", "stopping", "defaults", "autostart",
-		"thinking", "system_prompt", "profiles", "profile", "inspector", "storage",
+		"thinking", "inspector", "storage",
 		"max_concurrent", "max_body_size",
 	} {
 		if _, ok := state[key]; !ok {
 			t.Errorf("state missing %q: %v", key, state)
+		}
+	}
+	for _, key := range []string{"params", "system_prompt"} {
+		if _, ok := state[key]; ok {
+			t.Errorf("state still exposes %q: %v", key, state)
 		}
 	}
 	if state["version"] != "test-version" || state["pid"] != float64(4242) {
@@ -176,17 +181,12 @@ func TestStateShape(t *testing.T) {
 	if state["stopping"] != false {
 		t.Errorf("stopping = %v", state["stopping"])
 	}
-	params := state["params"].(map[string]any)
-	if params["max_tokens"] != float64(96) {
-		t.Errorf("params = %v", params)
-	}
 	defaults := state["defaults"].(map[string]any)
 	if defaults["upstream"] != config.DefaultUpstream {
 		t.Errorf("defaults.upstream = %v", defaults["upstream"])
 	}
-	defaultParams := defaults["params"].(map[string]any)
-	if defaultParams["temperature"] != 0.2 {
-		t.Errorf("defaults.params = %v", defaultParams)
+	if _, ok := defaults["params"]; ok {
+		t.Errorf("defaults still expose params: %v", defaults)
 	}
 	if defaults["max_concurrent"] != float64(config.DefaultMaxConcurrent) {
 		t.Errorf("defaults.max_concurrent = %v", defaults["max_concurrent"])
@@ -208,9 +208,8 @@ func TestStateShape(t *testing.T) {
 
 func TestConfigSaveAppliesAndPersists(t *testing.T) {
 	f := newFixture(t)
-	payload := `{"upstream":"http://127.0.0.1:11435/","timeout":30,"params":{"temperature":0},` +
+	payload := `{"upstream":"http://127.0.0.1:11435/","timeout":30,` +
 		`"max_concurrent":3,"max_body_size":2048,"thinking":"on",` +
-		`"system_prompt":{"mode":"inject-if-missing","text":"hi"},` +
 		`"inspector":{"capture_bodies":true,"retention_days":2,"max_rows":7}}`
 	rec := f.do(http.MethodPost, "/_/llm-proxy/api/config", payload)
 	if rec.Code != http.StatusOK {
@@ -232,14 +231,11 @@ func TestConfigSaveAppliesAndPersists(t *testing.T) {
 	if f.cfg.Upstream() != "http://127.0.0.1:11435" || f.cfg.Timeout() != 30*time.Second {
 		t.Errorf("live config = %+v", f.cfg.Snapshot())
 	}
-	if got := f.cfg.Params(); len(got) != 1 || string(got["temperature"]) != "0" {
-		t.Errorf("live params = %v", got)
-	}
 	if f.cfg.MaxConcurrent() != 3 || f.cfg.MaxBodySize() != 2048 {
 		t.Errorf("live limits = %d/%d", f.cfg.MaxConcurrent(), f.cfg.MaxBodySize())
 	}
-	resolved, _ := f.cfg.Policy("")
-	if resolved.Thinking != policy.ThinkingOn || resolved.SystemPrompt.Text != "hi" {
+	resolved := f.cfg.Policy()
+	if resolved.Thinking != policy.ThinkingOn {
 		t.Errorf("live policy = %+v", resolved)
 	}
 
@@ -259,14 +255,15 @@ func TestConfigSaveAppliesAndPersists(t *testing.T) {
 func TestConfigRejectsInvalidPayloads(t *testing.T) {
 	f := newFixture(t)
 	cases := map[string]int{
-		`{"params":[1,2]}`:       400,
-		`{"upstream":"ftp://x"}`: 400,
-		`{"timeout":0}`:          400,
-		`{"max_concurrent":0}`:   400,
-		`{"max_body_size":0}`:    400,
-		`not json`:               400,
-		`[1,2]`:                  400,
-		`null`:                   400,
+		`{"upstream":"ftp://x"}`:  400,
+		`{"timeout":0}`:           400,
+		`{"max_concurrent":0}`:    400,
+		`{"max_body_size":0}`:     400,
+		`{"profiles":{"raw":{}}}`: 400,
+		`{"profile":"raw"}`:       400,
+		`not json`:                400,
+		`[1,2]`:                   400,
+		`null`:                    400,
 	}
 	for payload, want := range cases {
 		rec := f.do(http.MethodPost, "/_/llm-proxy/api/config", payload)
@@ -280,14 +277,11 @@ func TestConfigRejectsInvalidPayloads(t *testing.T) {
 	if f.cfg.Upstream() != config.DefaultUpstream {
 		t.Errorf("rejected payloads changed upstream: %q", f.cfg.Upstream())
 	}
-	if len(f.cfg.Params()) != len(config.DefaultParams()) {
-		t.Errorf("rejected payloads changed params: %v", f.cfg.Params())
-	}
 }
 
 func TestConfigOversizedBody(t *testing.T) {
 	f := newFixture(t)
-	payload := `{"params":{"x":"` + strings.Repeat("a", MaxBody) + `"}}`
+	payload := `{"future":"` + strings.Repeat("a", MaxBody) + `"}`
 	rec := f.do(http.MethodPost, "/_/llm-proxy/api/config", payload)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", rec.Code)
